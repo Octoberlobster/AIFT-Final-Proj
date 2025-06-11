@@ -8,13 +8,27 @@ import seaborn as sns
 from itertools import combinations
 import warnings
 import os
-import graphviz
-from sklearn.tree import export_graphviz
+import platform
 warnings.filterwarnings('ignore')
 
-# 設定中文字體
-plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'Arial Unicode MS', 'SimHei']
-plt.rcParams['axes.unicode_minus'] = False
+# 設定中文字體 - 根據不同作業系統自動選擇
+def setup_chinese_font():
+    system = platform.system()
+    if system == 'Windows':
+        # Windows系統使用微軟正黑體或SimHei
+        try:
+            plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Microsoft YaHei']
+        except:
+            plt.rcParams['font.sans-serif'] = ['SimHei']
+    elif system == 'Darwin':  # macOS
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Heiti TC', 'STHeiti']
+    else:  # Linux
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'WenQuanYi Micro Hei', 'SimHei']
+    
+    plt.rcParams['axes.unicode_minus'] = False  # 解決負號顯示問題
+
+# 在程式開始時設定中文字體
+setup_chinese_font()
 
 class StockDecisionTreeSelector:
     def __init__(self, data_path, output_dir='Q2output'):
@@ -259,6 +273,9 @@ class StockDecisionTreeSelector:
             print("沒有結果可視覺化")
             return
         
+        # 確保中文字體設定
+        setup_chinese_font()
+        
         # 準備資料
         years = [r['test_year'] for r in self.results]
         returns = [r['best_return'] for r in self.results]
@@ -321,6 +338,9 @@ class StockDecisionTreeSelector:
     
     def create_feature_importance_chart(self):
         """創建特徵重要性圖表"""
+        # 確保中文字體設定
+        setup_chinese_font()
+        
         # 統計每個特徵被選中的次數
         feature_counts = {}
         for result in self.results:
@@ -359,6 +379,9 @@ class StockDecisionTreeSelector:
         if not self.results:
             return
         
+        # 確保中文字體設定
+        setup_chinese_font()
+        
         # 選擇最佳表現的決策樹進行視覺化
         best_result = max(self.results, key=lambda x: x['best_return'])
         
@@ -394,6 +417,9 @@ class StockDecisionTreeSelector:
         """創建績效比較圖表"""
         if not self.results:
             return
+        
+        # 確保中文字體設定
+        setup_chinese_font()
         
         returns = [r['best_return'] for r in self.results]
         years = [r['test_year'] for r in self.results]
