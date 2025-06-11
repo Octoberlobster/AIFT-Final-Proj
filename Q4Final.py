@@ -117,9 +117,6 @@ class Paper3StockSelector:
         # 特徵選擇部分（二進制編碼）
         n_features = len(self.feature_columns) + 8  # 原始特徵 + 新增特徵
         
-        # SVR參數範圍
-        # C: [0.1, 1000], gamma: [0.001, 10], epsilon: [0.01, 1.0]
-        
         # 註冊遺傳演算法組件
         self.toolbox.register("attr_bool", random.randint, 0, 1)
         self.toolbox.register("attr_float", random.uniform, 0, 1)
@@ -324,22 +321,29 @@ class Paper3StockSelector:
             test_enhanced['predicted_return'] = y_pred
             test_enhanced_sorted = test_enhanced.sort_values('predicted_return', ascending=False)
             
-            # 選擇前30支股票
+            # 選擇前10支股票（根據Paper 3的要求）
+            top_10_stocks = test_enhanced_sorted.head(10)
+            avg_return = top_10_stocks['Return'].mean()
+            
+            # 也選擇前30支股票用於比較
             top_30_stocks = test_enhanced_sorted.head(30)
-            avg_return = top_30_stocks['Return'].mean()
+            avg_return_30 = top_30_stocks['Return'].mean()
             
             return {
                 'train_year': train_year,
                 'test_year': test_year,
                 'best_return': avg_return,
+                'best_return_30': avg_return_30,
                 'best_features': available_features,
                 'best_C': best_C,
                 'best_gamma': best_gamma,
                 'best_epsilon': best_epsilon,
                 'num_features': len(available_features),
-                'num_selected_stocks': len(top_30_stocks),
-                'selected_stocks': top_30_stocks,
-                'fitness': best_individual.fitness.values[0]
+                'num_selected_stocks': len(top_10_stocks),
+                'selected_stocks_top10': top_10_stocks,
+                'selected_stocks_top30': top_30_stocks,
+                'fitness': best_individual.fitness.values[0],
+                'all_stocks_with_predictions': test_enhanced_sorted
             }
             
         except Exception as e:
@@ -364,12 +368,12 @@ class Paper3StockSelector:
             
             if result and result['best_return'] is not None:
                 self.results.append(result)
-                print(f"最佳平均報酬率: {result['best_return']:.4f}%")
+                print(f"前10支股票平均報酬率: {result['best_return']:.4f}%")
+                print(f"前30支股票平均報酬率: {result['best_return_30']:.4f}%")
                 print(f"最佳C: {result['best_C']:.4f}")
                 print(f"最佳gamma: {result['best_gamma']:.4f}")
                 print(f"最佳epsilon: {result['best_epsilon']:.4f}")
                 print(f"特徵數量: {result['num_features']}")
-                print(f"選中股票數量: {result['num_selected_stocks']}")
                 print(f"適應度: {result['fitness']:.4f}")
             else:
                 print("未找到有效結果")
@@ -381,43 +385,82 @@ class Paper3StockSelector:
             return
         
         results_data = []
-        selected_stocks_data = []
+        top10_stocks_data = []
+        top30_stocks_data = []
+        all_predictions_data = []
         
         for result in self.results:
             results_data.append({
                 '訓練年份': result['train_year'],
                 '測試年份': result['test_year'],
-                '最佳平均報酬率(%)': result['best_return'],
+                '前10支股票平均報酬率(%)': result['best_return'],
+                '前30支股票平均報酬率(%)': result['best_return_30'],
                 '最佳C參數': result['best_C'],
                 '最佳gamma參數': result['best_gamma'],
                 '最佳epsilon參數': result['best_epsilon'],
                 '特徵數量': result['num_features'],
-                '選中股票數量': result['num_selected_stocks'],
                 'GA適應度': result['fitness'],
                 '最佳特徵組合': ', '.join(result['best_features'])
             })
             
-            if result['selected_stocks'] is not None:
-                stocks = result['selected_stocks'].copy()
+            # 儲存前10支股票詳細資訊
+            if result['selected_stocks_top10'] is not None:
+                stocks = result['selected_stocks_top10'].copy()
                 stocks['訓練年份'] = result['train_year']
                 stocks['測試年份'] = result['test_year']
                 stocks['使用C參數'] = result['best_C']
                 stocks['使用gamma參數'] = result['best_gamma']
                 stocks['使用epsilon參數'] = result['best_epsilon']
-                selected_stocks_data.append(stocks)
+                stocks['排名'] = range(1, len(stocks) + 1)
+                top10_stocks_data.append(stocks)
+            
+            # 儲存前30支股票詳細資訊
+            if result['selected_stocks_top30'] is not None:
+                stocks = result['selected_stocks_top30'].copy()
+                stocks['訓練年份'] = result['train_year']
+                stocks['測試年份'] = result['test_year']
+                stocks['使用C參數'] = result['best_C']
+                stocks['使用gamma參數'] = result['best_gamma']
+                stocks['使用epsilon參數'] = result['best_epsilon']
+                stocks['排名'] = range(1, len(stocks) + 1)
+                top30_stocks_data.append(stocks)
+            
+            # 儲存所有股票的預測結果
+            if result['all_stocks_with_predictions'] is not None:
+                all_stocks = result['all_stocks_with_predictions'].copy()
+                all_stocks['訓練年份'] = result['train_year']
+                all_stocks['測試年份'] = result['test_year']
+                all_stocks['排名'] = range(1, len(all_stocks) + 1)
+                all_predictions_data.append(all_stocks)
         
+        # 儲存主要結果
         results_df = pd.DataFrame(results_data)
         results_path = os.path.join(self.output_dir, 'paper3_ga_svr_results.csv')
         results_df.to_csv(results_path, index=False, encoding='utf-8-sig')
         
-        if selected_stocks_data:
-            all_selected_stocks = pd.concat(selected_stocks_data, ignore_index=True)
-            stocks_path = os.path.join(self.output_dir, 'paper3_selected_stocks_details.csv')
-            all_selected_stocks.to_csv(stocks_path, index=False, encoding='utf-8-sig')
+        # 儲存前10支股票詳細資訊
+        if top10_stocks_data:
+            all_top10_stocks = pd.concat(top10_stocks_data, ignore_index=True)
+            top10_path = os.path.join(self.output_dir, 'paper3_top10_stocks_details.csv')
+            all_top10_stocks.to_csv(top10_path, index=False, encoding='utf-8-sig')
+        
+        # 儲存前30支股票詳細資訊
+        if top30_stocks_data:
+            all_top30_stocks = pd.concat(top30_stocks_data, ignore_index=True)
+            top30_path = os.path.join(self.output_dir, 'paper3_top30_stocks_details.csv')
+            all_top30_stocks.to_csv(top30_path, index=False, encoding='utf-8-sig')
+        
+        # 儲存所有股票預測結果
+        if all_predictions_data:
+            all_predictions = pd.concat(all_predictions_data, ignore_index=True)
+            predictions_path = os.path.join(self.output_dir, 'paper3_all_stock_predictions.csv')
+            all_predictions.to_csv(predictions_path, index=False, encoding='utf-8-sig')
         
         print(f"結果已儲存到 {self.output_dir} 資料夾:")
         print(f"- paper3_ga_svr_results.csv (主要結果)")
-        print(f"- paper3_selected_stocks_details.csv (選中股票詳細資訊)")
+        print(f"- paper3_top10_stocks_details.csv (前10支股票詳細資訊)")
+        print(f"- paper3_top30_stocks_details.csv (前30支股票詳細資訊)")
+        print(f"- paper3_all_stock_predictions.csv (所有股票預測結果)")
         
         return results_df
     
@@ -430,7 +473,8 @@ class Paper3StockSelector:
         setup_chinese_font()
         
         years = [r['test_year'] for r in self.results]
-        returns = [r['best_return'] for r in self.results]
+        returns_10 = [r['best_return'] for r in self.results]
+        returns_30 = [r['best_return_30'] for r in self.results]
         c_params = [r['best_C'] for r in self.results]
         gamma_params = [r['best_gamma'] for r in self.results]
         epsilon_params = [r['best_epsilon'] for r in self.results]
@@ -440,13 +484,15 @@ class Paper3StockSelector:
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
         fig.suptitle('Paper 3 GA-SVR股票選股模型分析結果', fontsize=16, fontweight='bold')
         
-        # 1. 年度報酬率趨勢
-        axes[0, 0].plot(years, returns, marker='o', linewidth=2, markersize=8, color='green')
-        axes[0, 0].set_title('年度最佳平均報酬率趨勢')
+        # 1. 年度報酬率趨勢比較（前10 vs 前30）
+        axes[0, 0].plot(years, returns_10, marker='o', linewidth=2, markersize=8, color='green', label='前10支股票')
+        axes[0, 0].plot(years, returns_30, marker='s', linewidth=2, markersize=6, color='blue', label='前30支股票')
+        axes[0, 0].set_title('年度最佳平均報酬率趨勢比較')
         axes[0, 0].set_xlabel('年份')
         axes[0, 0].set_ylabel('平均報酬率 (%)')
         axes[0, 0].grid(True, alpha=0.3)
         axes[0, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        axes[0, 0].legend()
         
         # 2. SVR參數C的變化
         axes[0, 1].plot(years, c_params, marker='s', linewidth=2, markersize=6, color='blue')
@@ -464,9 +510,9 @@ class Paper3StockSelector:
         axes[0, 2].grid(True, alpha=0.3)
         axes[0, 2].set_yscale('log')
         
-        # 4. 特徵數量 vs 報酬率
-        scatter = axes[1, 0].scatter(num_features, returns, c=years, cmap='viridis', s=100, alpha=0.7)
-        axes[1, 0].set_title('特徵數量 vs 平均報酬率')
+        # 4. 特徵數量 vs 報酬率（前10支股票）
+        scatter = axes[1, 0].scatter(num_features, returns_10, c=years, cmap='viridis', s=100, alpha=0.7)
+        axes[1, 0].set_title('特徵數量 vs 前10支股票平均報酬率')
         axes[1, 0].set_xlabel('特徵數量')
         axes[1, 0].set_ylabel('平均報酬率 (%)')
         axes[1, 0].grid(True, alpha=0.3)
@@ -479,18 +525,102 @@ class Paper3StockSelector:
         axes[1, 1].set_ylabel('適應度分數')
         axes[1, 1].grid(True, alpha=0.3)
         
-        # 6. 累積報酬率
-        cumulative_returns = np.cumsum(returns)
-        axes[1, 2].plot(years, cumulative_returns, marker='o', linewidth=2, markersize=6, color='orange')
-        axes[1, 2].fill_between(years, cumulative_returns, alpha=0.3, color='orange')
-        axes[1, 2].set_title('累積報酬率趨勢')
+        # 6. 累積報酬率比較
+        cumulative_returns_10 = np.cumsum(returns_10)
+        cumulative_returns_30 = np.cumsum(returns_30)
+        axes[1, 2].plot(years, cumulative_returns_10, marker='o', linewidth=2, markersize=6, color='green', label='前10支股票')
+        axes[1, 2].plot(years, cumulative_returns_30, marker='s', linewidth=2, markersize=6, color='blue', label='前30支股票')
+        axes[1, 2].fill_between(years, cumulative_returns_10, alpha=0.3, color='green')
+        axes[1, 2].fill_between(years, cumulative_returns_30, alpha=0.3, color='blue')
+        axes[1, 2].set_title('累積報酬率趨勢比較')
         axes[1, 2].set_xlabel('年份')
         axes[1, 2].set_ylabel('累積報酬率 (%)')
         axes[1, 2].grid(True, alpha=0.3)
+        axes[1, 2].legend()
         
         plt.tight_layout()
         chart_path = os.path.join(self.output_dir, 'paper3_ga_svr_analysis.png')
         plt.savefig(chart_path, dpi=300, bbox_inches='tight')
+        plt.show()
+    
+    def create_top10_analysis_chart(self):
+        """創建前10支股票專門分析圖表"""
+        if not self.results:
+            return
+        
+        setup_chinese_font()
+        
+        # 分析前10支股票的表現
+        years = [r['test_year'] for r in self.results]
+        returns_10 = [r['best_return'] for r in self.results]
+        
+        # 計算年度排名分布
+        yearly_rankings = {}
+        for result in self.results:
+            if result['selected_stocks_top10'] is not None:
+                year = result['test_year']
+                stocks = result['selected_stocks_top10']
+                yearly_rankings[year] = stocks['Return'].tolist()
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle('前10支股票詳細分析', fontsize=16, fontweight='bold')
+        
+        # 1. 前10支股票年度報酬率分布
+        colors = ['green' if r > 0 else 'red' for r in returns_10]
+        axes[0, 0].bar(years, returns_10, color=colors, alpha=0.7)
+        axes[0, 0].axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        axes[0, 0].set_title('前10支股票年度平均報酬率')
+        axes[0, 0].set_xlabel('年份')
+        axes[0, 0].set_ylabel('平均報酬率 (%)')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # 2. 前10支股票報酬率箱型圖
+        if yearly_rankings:
+            box_data = []
+            box_labels = []
+            for year in sorted(yearly_rankings.keys()):
+                box_data.append(yearly_rankings[year])
+                box_labels.append(str(year))
+            
+            axes[0, 1].boxplot(box_data, labels=box_labels)
+            axes[0, 1].set_title('前10支股票個別報酬率分布')
+            axes[0, 1].set_xlabel('年份')
+            axes[0, 1].set_ylabel('個別股票報酬率 (%)')
+            axes[0, 1].grid(True, alpha=0.3)
+            axes[0, 1].tick_params(axis='x', rotation=45)
+        
+        # 3. 勝率統計
+        positive_years = sum(1 for r in returns_10 if r > 0)
+        total_years = len(returns_10)
+        win_rate = positive_years / total_years * 100
+        
+        axes[1, 0].pie([positive_years, total_years - positive_years], 
+                      labels=[f'正報酬\n({positive_years}年)', f'負報酬\n({total_years - positive_years}年)'],
+                      colors=['green', 'red'], autopct='%1.1f%%', startangle=90)
+        axes[1, 0].set_title(f'前10支股票勝率統計\n總勝率: {win_rate:.1f}%')
+        
+        # 4. 累積報酬率與統計指標
+        cumulative_returns = np.cumsum(returns_10)
+        axes[1, 1].plot(years, cumulative_returns, marker='o', linewidth=2, markersize=6, color='blue')
+        axes[1, 1].fill_between(years, cumulative_returns, alpha=0.3, color='blue')
+        axes[1, 1].set_title('前10支股票累積報酬率')
+        axes[1, 1].set_xlabel('年份')
+        axes[1, 1].set_ylabel('累積報酬率 (%)')
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        # 添加統計信息
+        mean_return = np.mean(returns_10)
+        std_return = np.std(returns_10)
+        max_return = np.max(returns_10)
+        min_return = np.min(returns_10)
+        
+        stats_text = f'平均: {mean_return:.2f}%\n標準差: {std_return:.2f}%\n最高: {max_return:.2f}%\n最低: {min_return:.2f}%'
+        axes[1, 1].text(0.02, 0.98, stats_text, transform=axes[1, 1].transAxes, 
+                        verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        top10_chart_path = os.path.join(self.output_dir, 'paper3_top10_analysis.png')
+        plt.savefig(top10_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
     
     def create_parameter_analysis_chart(self):
@@ -584,7 +714,8 @@ class Paper3StockSelector:
         if not self.results:
             return
         
-        returns = [r['best_return'] for r in self.results]
+        returns_10 = [r['best_return'] for r in self.results]
+        returns_30 = [r['best_return_30'] for r in self.results]
         c_params = [r['best_C'] for r in self.results]
         gamma_params = [r['best_gamma'] for r in self.results]
         epsilon_params = [r['best_epsilon'] for r in self.results]
@@ -600,13 +731,21 @@ Paper 3 GA-SVR股票選股模型分析報告
 - 族群大小: {self.population_size}
 - 演化世代: {self.generations}
 
-績效統計:
-- 平均年報酬率: {np.mean(returns):.4f}%
-- 報酬率標準差: {np.std(returns):.4f}%
-- 最高年報酬率: {np.max(returns):.4f}%
-- 最低年報酬率: {np.min(returns):.4f}%
-- 正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}
-- 勝率: {sum(1 for r in returns if r > 0)/len(returns)*100:.2f}%
+前10支股票績效統計:
+- 平均年報酬率: {np.mean(returns_10):.4f}%
+- 報酬率標準差: {np.std(returns_10):.4f}%
+- 最高年報酬率: {np.max(returns_10):.4f}%
+- 最低年報酬率: {np.min(returns_10):.4f}%
+- 正報酬年數: {sum(1 for r in returns_10 if r > 0)}/{len(returns_10)}
+- 勝率: {sum(1 for r in returns_10 if r > 0)/len(returns_10)*100:.2f}%
+
+前30支股票績效統計:
+- 平均年報酬率: {np.mean(returns_30):.4f}%
+- 報酬率標準差: {np.std(returns_30):.4f}%
+- 最高年報酬率: {np.max(returns_30):.4f}%
+- 最低年報酬率: {np.min(returns_30):.4f}%
+- 正報酬年數: {sum(1 for r in returns_30 if r > 0)}/{len(returns_30)}
+- 勝率: {sum(1 for r in returns_30 if r > 0)/len(returns_30)*100:.2f}%
 
 SVR參數統計:
 - C參數平均值: {np.mean(c_params):.4f}
@@ -622,32 +761,33 @@ SVR參數統計:
         for result in self.results:
             report += f"""
 {result['test_year']}年:
-  - 報酬率: {result['best_return']:.4f}%
+  - 前10支股票報酬率: {result['best_return']:.4f}%
+  - 前30支股票報酬率: {result['best_return_30']:.4f}%
   - 最佳C: {result['best_C']:.4f}
   - 最佳gamma: {result['best_gamma']:.4f}
   - 最佳epsilon: {result['best_epsilon']:.4f}
   - 特徵數量: {result['num_features']}
-  - 選中股票數: {result['num_selected_stocks']}
   - GA適應度: {result['fitness']:.4f}
   - 主要特徵: {', '.join(result['best_features'][:5])}{'...' if len(result['best_features']) > 5 else ''}
 """
         
-        best_year_idx = np.argmax(returns)
-        best_result = self.results[best_year_idx]
+        best_year_idx_10 = np.argmax(returns_10)
+        best_result = self.results[best_year_idx_10]
         
         report += f"""
 
-最佳表現年份: {best_result['test_year']}
+最佳表現年份（前10支股票）: {best_result['test_year']}
   - 報酬率: {best_result['best_return']:.4f}%
   - 使用C: {best_result['best_C']:.4f}
   - 使用gamma: {best_result['best_gamma']:.4f}
   - 使用epsilon: {best_result['best_epsilon']:.4f}
   - 特徵數量: {best_result['num_features']}
-  - 選中股票數: {best_result['num_selected_stocks']}
 
 風險指標:
-- 夏普比率: {np.mean(returns)/np.std(returns):.4f} (假設無風險利率為0)
-- 最大回撤: {self.calculate_max_drawdown(returns):.4f}%
+- 前10支股票夏普比率: {np.mean(returns_10)/np.std(returns_10):.4f} (假設無風險利率為0)
+- 前30支股票夏普比率: {np.mean(returns_30)/np.std(returns_30):.4f} (假設無風險利率為0)
+- 前10支股票最大回撤: {self.calculate_max_drawdown(returns_10):.4f}%
+- 前30支股票最大回撤: {self.calculate_max_drawdown(returns_30):.4f}%
 
 GA-SVR方法優勢:
 - 同時優化特徵選擇和SVR參數，避免局部最優解
@@ -655,6 +795,12 @@ GA-SVR方法優勢:
 - SVR的非線性建模能力適合複雜的股票市場
 - 自動化參數調整，減少人為偏差
 - 強健的回歸預測能力
+- 能夠選出每年表現最佳的前10支股票
+
+Paper 3 核心貢獻:
+- 結合GA和SVR的混合方法，提供了有效的股票選擇策略
+- 透過14個財務比率的綜合分析，捕捉股票的多維特徵
+- 基於預測報酬率的排序選擇，提供了量化的投資決策依據
 """
         
         report_path = os.path.join(self.output_dir, 'paper3_ga_svr_report.txt')
@@ -676,29 +822,39 @@ GA-SVR方法優勢:
             print("沒有結果可顯示")
             return
         
-        returns = [r['best_return'] for r in self.results]
+        returns_10 = [r['best_return'] for r in self.results]
+        returns_30 = [r['best_return_30'] for r in self.results]
         
         print("\n" + "="*50)
         print("Paper 3 GA-SVR股票選股模型分析摘要")
         print("="*50)
         print(f"分析期間: {self.results[0]['train_year']}-{self.results[-1]['test_year']}")
         print(f"總測試年數: {len(self.results)}")
-        print(f"平均年報酬率: {np.mean(returns):.4f}%")
-        print(f"報酬率標準差: {np.std(returns):.4f}%")
-        print(f"最高年報酬率: {np.max(returns):.4f}%")
-        print(f"最低年報酬率: {np.min(returns):.4f}%")
-        print(f"正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}")
         
-        best_year_idx = np.argmax(returns)
+        print(f"\n前10支股票表現:")
+        print(f"  平均年報酬率: {np.mean(returns_10):.4f}%")
+        print(f"  報酬率標準差: {np.std(returns_10):.4f}%")
+        print(f"  最高年報酬率: {np.max(returns_10):.4f}%")
+        print(f"  最低年報酬率: {np.min(returns_10):.4f}%")
+        print(f"  正報酬年數: {sum(1 for r in returns_10 if r > 0)}/{len(returns_10)}")
+        
+        print(f"\n前30支股票表現:")
+        print(f"  平均年報酬率: {np.mean(returns_30):.4f}%")
+        print(f"  報酬率標準差: {np.std(returns_30):.4f}%")
+        print(f"  最高年報酬率: {np.max(returns_30):.4f}%")
+        print(f"  最低年報酬率: {np.min(returns_30):.4f}%")
+        print(f"  正報酬年數: {sum(1 for r in returns_30 if r > 0)}/{len(returns_30)}")
+        
+        best_year_idx = np.argmax(returns_10)
         best_result = self.results[best_year_idx]
         
         print(f"\n最佳表現年份: {best_result['test_year']}")
-        print(f"  報酬率: {best_result['best_return']:.4f}%")
+        print(f"  前10支股票報酬率: {best_result['best_return']:.4f}%")
+        print(f"  前30支股票報酬率: {best_result['best_return_30']:.4f}%")
         print(f"  使用C: {best_result['best_C']:.4f}")
         print(f"  使用gamma: {best_result['best_gamma']:.4f}")
         print(f"  使用epsilon: {best_result['best_epsilon']:.4f}")
         print(f"  特徵數量: {best_result['num_features']}")
-        print(f"  選中股票數: {best_result['num_selected_stocks']}")
 
 def main():
     selector = Paper3StockSelector('top200.xlsx', output_dir='Q4output')
@@ -708,6 +864,7 @@ def main():
     
     selector.save_results_to_csv()
     selector.create_visualizations()
+    selector.create_top10_analysis_chart()
     selector.create_parameter_analysis_chart()
     selector.create_feature_importance_chart()
     selector.save_analysis_report()
