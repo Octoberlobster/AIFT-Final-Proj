@@ -1,472 +1,718 @@
 import pandas as pd
 import numpy as np
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, classification_report
-from itertools import combinations
-import warnings
-import csv
 import math
+from collections import Counter
+import warnings
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import os
 warnings.filterwarnings('ignore')
 
-class ID3StockSelector:
-    def __init__(self, data_path='top200.xlsx'):
-        """
-        初始化ID3股票選擇器
-        """
-        self.data = self.load_data(data_path)
-        self.feature_columns = [
+# 設定中文字體
+plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial Unicode MS']
+plt.rcParams['axes.unicode_minus'] = False
+
+class ID3DecisionTree:
+    def __init__(self, max_depth=10, min_samples_split=2):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.tree = None
+        self.feature_names = None
+        
+    def entropy(self, y):
+        """計算熵值"""
+        if len(y) == 0:
+            return 0
+        
+        counts = Counter(y)
+        total = len(y)
+        entropy = 0
+        
+        for count in counts.values():
+            if count > 0:
+                p = count / total
+                entropy -= p * math.log2(p)
+        
+        return entropy
+    
+    def information_gain(self, X_column, y, threshold=None):
+        """計算資訊增益"""
+        parent_entropy = self.entropy(y)
+        
+        if threshold is not None:
+            # 連續變數處理
+            left_mask = X_column <= threshold
+            right_mask = X_column > threshold
+            
+            if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+                return 0
+            
+            left_entropy = self.entropy(y[left_mask])
+            right_entropy = self.entropy(y[right_mask])
+            
+            left_weight = np.sum(left_mask) / len(y)
+            right_weight = np.sum(right_mask) / len(y)
+            
+            weighted_entropy = left_weight * left_entropy + right_weight * right_entropy
+        else:
+            # 類別變數處理
+            unique_values = np.unique(X_column)
+            weighted_entropy = 0
+            
+            for value in unique_values:
+                mask = X_column == value
+                subset_entropy = self.entropy(y[mask])
+                weight = np.sum(mask) / len(y)
+                weighted_entropy += weight * subset_entropy
+        
+        return parent_entropy - weighted_entropy
+    
+    def find_best_split(self, X, y, feature_names):
+        """找到最佳分割特徵和閾值"""
+        best_gain = -1
+        best_feature = None
+        best_threshold = None
+        
+        for i, feature_name in enumerate(feature_names):
+            X_column = X[:, i]
+            
+            # 處理連續變數
+            if np.issubdtype(X_column.dtype, np.number):
+                unique_values = np.unique(X_column)
+                
+                if len(unique_values) > 1:
+                    for j in range(len(unique_values) - 1):
+                        threshold = (unique_values[j] + unique_values[j + 1]) / 2
+                        gain = self.information_gain(X_column, y, threshold)
+                        
+                        if gain > best_gain:
+                            best_gain = gain
+                            best_feature = i
+                            best_threshold = threshold
+            else:
+                # 處理類別變數
+                gain = self.information_gain(X_column, y)
+                
+                if gain > best_gain:
+                    best_gain = gain
+                    best_feature = i
+                    best_threshold = None
+        
+        return best_feature, best_threshold, best_gain
+    
+    def build_tree(self, X, y, feature_names, depth=0):
+        """遞迴建立決策樹"""
+        # 停止條件
+        if len(set(y)) == 1:
+            return {'type': 'leaf', 'label': y[0]}
+        
+        if depth >= self.max_depth or len(feature_names) == 0 or len(y) < self.min_samples_split:
+            most_common = Counter(y).most_common(1)[0][0]
+            return {'type': 'leaf', 'label': most_common}
+        
+        # 找到最佳分割
+        best_feature, best_threshold, best_gain = self.find_best_split(X, y, feature_names)
+        
+        if best_gain == 0 or best_feature is None:
+            most_common = Counter(y).most_common(1)[0][0]
+            return {'type': 'leaf', 'label': most_common}
+        
+        # 建立節點
+        node = {
+            'type': 'node',
+            'feature': best_feature,
+            'feature_name': feature_names[best_feature],
+            'threshold': best_threshold,
+            'children': {}
+        }
+        
+        # 分割資料
+        if best_threshold is not None:
+            # 連續變數分割
+            left_mask = X[:, best_feature] <= best_threshold
+            right_mask = X[:, best_feature] > best_threshold
+            
+            if np.sum(left_mask) > 0:
+                node['children']['left'] = self.build_tree(
+                    X[left_mask], y[left_mask], feature_names, depth + 1
+                )
+            
+            if np.sum(right_mask) > 0:
+                node['children']['right'] = self.build_tree(
+                    X[right_mask], y[right_mask], feature_names, depth + 1
+                )
+        else:
+            # 類別變數分割
+            unique_values = np.unique(X[:, best_feature])
+            
+            for value in unique_values:
+                mask = X[:, best_feature] == value
+                if np.sum(mask) > 0:
+                    node['children'][value] = self.build_tree(
+                        X[mask], y[mask], feature_names, depth + 1
+                    )
+        
+        return node
+    
+    def fit(self, X, y, feature_names):
+        """訓練模型"""
+        self.feature_names = feature_names
+        self.tree = self.build_tree(X, y, feature_names)
+    
+    def predict_single(self, x, tree=None):
+        """預測單一樣本"""
+        if tree is None:
+            tree = self.tree
+        
+        if tree['type'] == 'leaf':
+            return tree['label']
+        
+        feature_idx = tree['feature']
+        threshold = tree['threshold']
+        
+        if threshold is not None:
+            # 連續變數
+            if x[feature_idx] <= threshold:
+                if 'left' in tree['children']:
+                    return self.predict_single(x, tree['children']['left'])
+                else:
+                    return 1  # 預設值
+            else:
+                if 'right' in tree['children']:
+                    return self.predict_single(x, tree['children']['right'])
+                else:
+                    return 1  # 預設值
+        else:
+            # 類別變數
+            value = x[feature_idx]
+            if value in tree['children']:
+                return self.predict_single(x, tree['children'][value])
+            else:
+                return 1  # 預設值
+    
+    def predict(self, X):
+        """預測多個樣本"""
+        return np.array([self.predict_single(x) for x in X])
+
+
+class StockSelectionID3:
+    def __init__(self, max_depth=8, min_samples_split=5):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.models = {}
+        self.selected_features = None
+        
+    def select_features(self, df, target_col='ReturnMean_year_Label'):
+        """特徵選擇"""
+        feature_cols = [
             '市值(百萬元)', '收盤價(元)_年', 'Unknown masked parameter',
-            '股價淨值比', '股價營收比', 'M淨值報酬率─稅後', '資產報酬率ROA',
-            '營業利益率OPM', '利潤邊際NPM', '負債/淨值比', 'M流動比率',
-            'M速動比率', 'M存貨週轉率 (次)', 'M應收帳款週轉次',
+            '股價淨值比', '股價營收比', 'M淨值報酬率─稅後',
+            '資產報酬率ROA', '營業利益率OPM', '利潤邊際NPM',
+            '負債/淨值比', 'M流動比率', 'M速動比率',
+            'M存貨週轉率 (次)', 'M應收帳款週轉次',
             'M營業利益成長率', 'M稅後淨利成長率'
         ]
-        print(f"特徵數量: {len(self.feature_columns)}")
-        print(f"特徵索引範圍: 0-{len(self.feature_columns)-1}")
         
-    def load_data(self, data_path):
-        """
-        載入股票資料並預處理
-        """
-        df = pd.read_excel(data_path)
-        # 移除200912的資料
-        df = df[df['年月'] != 200912]
+        # 移除缺失值過多的特徵
+        available_features = []
+        for col in feature_cols:
+            if col in df.columns:
+                missing_ratio = df[col].isnull().sum() / len(df)
+                if missing_ratio < 0.3:  # 缺失值少於30%
+                    available_features.append(col)
+        
+        return available_features
+    
+    def prepare_data(self, df, feature_cols, target_col):
+        """資料預處理"""
+        # 選擇需要的欄位
+        data = df[feature_cols + [target_col]].copy()
+        
         # 處理缺失值
-        df = df.fillna(df.median(numeric_only=True))
-        return df
+        for col in feature_cols:
+            if data[col].dtype in ['float64', 'int64']:
+                data[col] = data[col].fillna(data[col].median())
+            else:
+                data[col] = data[col].fillna(data[col].mode()[0] if not data[col].mode().empty else 0)
+        
+        # 分離特徵和目標
+        X = data[feature_cols].values
+        y = data[target_col].values
+        
+        return X, y
     
-    def get_year_data(self, year):
-        """
-        取得特定年份的資料
-        """
-        year_str = f"{year}12"
-        return self.data[self.data['年月'] == int(year_str)]
-    
-    def prepare_features(self, data, feature_subset=None):
-        """
-        準備特徵資料
-        """
-        if feature_subset is None:
-            feature_subset = self.feature_columns
+    def evaluate_feature_combinations(self, train_df, test_df):
+        """評估不同特徵組合"""
+        all_features = self.select_features(train_df)
         
-        X = data[feature_subset].values
-        y = data['ReturnMean_year_Label'].values
-        returns = data['Return'].values
-        stock_names = data['簡稱'].values
+        # 定義不同的特徵組合
+        feature_combinations = [
+            # 基本財務指標
+            ['股價淨值比', '股價營收比', 'M淨值報酬率─稅後', '資產報酬率ROA'],
+            
+            # 營運效率指標
+            ['營業利益率OPM', '利潤邊際NPM', 'M流動比率', 'M速動比率'],
+            
+            # 成長性指標
+            ['M營業利益成長率', 'M稅後淨利成長率', 'M存貨週轉率 (次)', 'M應收帳款週轉次'],
+            
+            # 綜合指標
+            ['股價淨值比', '資產報酬率ROA', '營業利益率OPM', 'M淨值報酬率─稅後', 'M流動比率'],
+            
+            # 價值投資指標
+            ['股價淨值比', '股價營收比', '市值(百萬元)', '收盤價(元)_年'],
+            
+            # 所有可用特徵
+            all_features
+        ]
         
-        return X, y, returns, stock_names
-    
-    def generate_feature_combinations(self):
-        """
-        生成不同的特徵組合
-        """
-        feature_combinations = []
-        
-        # 1. 所有特徵的索引
-        all_features = list(range(len(self.feature_columns)))
-        feature_combinations.append(all_features)
-        
-        # 2. 重要財務指標 - 修正索引範圍
-        important_indices = [0, 3, 4, 5, 6, 7]  # 確保在有效範圍內
-        feature_combinations.append(important_indices)
-        
-        # 3. 財務比率特徵
-        ratio_indices = [3, 4, 5, 6, 7]  # 確保索引在有效範圍內
-        feature_combinations.append(ratio_indices)
-        
-        # 4. 成長性指標
-        growth_indices = [14, 15, 5, 6]  # 檢查索引是否有效
-        # 過濾掉超出範圍的索引
-        growth_indices = [i for i in growth_indices if i < len(self.feature_columns)]
-        if growth_indices:  # 確保列表不為空
-            feature_combinations.append(growth_indices)
-        
-        # 5. 流動性指標
-        liquidity_indices = [10, 11, 12, 13]
-        # 過濾掉超出範圍的索引
-        liquidity_indices = [i for i in liquidity_indices if i < len(self.feature_columns)]
-        if liquidity_indices:  # 確保列表不為空
-            feature_combinations.append(liquidity_indices)
-        
-        return feature_combinations
-    
-    def train_and_evaluate_id3(self, X_train, y_train, train_returns, features, 
-                              max_depth=10, min_samples_split=5, min_samples_leaf=2):
-        """
-        訓練ID3模型並評估在訓練集上的表現
-        """
-        # 使用scikit-learn的決策樹實現ID3算法
-        dt = DecisionTreeClassifier(
-            criterion='entropy',  # 使用信息熵，類似ID3
-            max_depth=max_depth,
-            min_samples_split=min_samples_split,
-            min_samples_leaf=min_samples_leaf,
-            random_state=42
-        )
-        
-        # 訓練模型
-        dt.fit(X_train, y_train)
-        
-        # 在訓練集上預測
-        y_pred = dt.predict(X_train)
-        
-        # 選擇預測為正類(1)的股票
-        positive_indices = np.where(y_pred == 1)[0]
-        
-        if len(positive_indices) == 0:
-            return -np.inf, dt, 0
-        
-        # 計算這些股票的平均報酬率
-        selected_returns = train_returns[positive_indices]
-        avg_return = np.mean(selected_returns)
-        
-        return avg_return, dt, len(positive_indices)
-    
-    def find_best_parameters(self, train_data, 
-                           max_depth_range=[5, 8, 10, 15], 
-                           min_samples_split_range=[3, 5, 10],
-                           min_samples_leaf_range=[1, 2, 5]):
-        """
-        尋找最佳的決策樹參數和特徵組合
-        """
-        feature_combinations = self.generate_feature_combinations()
-        
-        best_return = -np.inf
-        best_params = None
+        best_return = -float('inf')
+        best_features = None
         best_model = None
-        
-        print(f"  正在測試 {len(feature_combinations)} 種特徵組合和多種參數...")
+        results = []
         
         for i, features in enumerate(feature_combinations):
-            print(f"    特徵組合 {i+1}/{len(feature_combinations)}: {len(features)} 個特徵")
+            # 確保特徵存在於資料中
+            available_features = [f for f in features if f in train_df.columns]
             
-            # 驗證特徵索引是否有效
-            valid_features = [f for f in features if f < len(self.feature_columns)]
-            if len(valid_features) != len(features):
-                print(f"    警告: 特徵組合包含無效索引，已過濾")
-                features = valid_features
-            
-            if len(features) == 0:
-                print(f"    跳過: 沒有有效特徵")
+            if len(available_features) < 2:
                 continue
                 
             try:
-                X_train, y_train, train_returns, _ = self.prepare_features(
-                    train_data, [self.feature_columns[j] for j in features]
+                # 準備訓練資料
+                X_train, y_train = self.prepare_data(
+                    train_df, available_features, 'ReturnMean_year_Label'
                 )
                 
-                for max_depth in max_depth_range:
-                    for min_samples_split in min_samples_split_range:
-                        for min_samples_leaf in min_samples_leaf_range:
-                            avg_return, dt, n_selected = self.train_and_evaluate_id3(
-                                X_train, y_train, train_returns, features,
-                                max_depth, min_samples_split, min_samples_leaf
-                            )
-                            
-                            # 更新最佳參數
-                            if avg_return > best_return:
-                                best_return = avg_return
-                                best_params = {
-                                    'max_depth': max_depth,
-                                    'min_samples_split': min_samples_split,
-                                    'min_samples_leaf': min_samples_leaf,
-                                    'features': features,
-                                    'feature_names': [self.feature_columns[j] for j in features],
-                                    'avg_return': avg_return,
-                                    'n_selected': n_selected
-                                }
-                                best_model = dt
-            except Exception as e:
-                print(f"    特徵組合 {i+1} 處理失敗: {e}")
-                continue
-        
-        return best_params, best_model
-    
-    def select_stocks_with_tree(self, model, test_data, features, top_n_stocks=10):
-        """
-        使用已訓練的決策樹選擇股票
-        """
-        X_test, _, test_returns, stock_names = self.prepare_features(
-            test_data, [self.feature_columns[j] for j in features]
-        )
-        
-        # 預測測試資料
-        y_pred = model.predict(X_test)
-        
-        # 如果模型支持預測機率，使用機率排序
-        try:
-            pred_proba = model.predict_proba(X_test)
-            has_proba = True
-        except:
-            has_proba = False
-        
-        # 選擇預測為正類的股票
-        positive_indices = np.where(y_pred == 1)[0]
-        
-        if len(positive_indices) == 0:
-            # 如果沒有預測為正類的股票，選擇報酬率最高的股票
-            if has_proba:
-                positive_proba = pred_proba[:, 1]
-                top_indices = np.argsort(positive_proba)[-top_n_stocks:]
-            else:
-                top_indices = np.argsort(test_returns)[-top_n_stocks:]
-            selected_indices = top_indices
-        else:
-            # 如果選中的股票太多，選擇最有潛力的前N檔
-            if len(positive_indices) > top_n_stocks:
-                if has_proba:
-                    positive_proba = pred_proba[positive_indices, 1]
-                    top_relative_indices = np.argsort(positive_proba)[-top_n_stocks:]
-                    selected_indices = positive_indices[top_relative_indices]
+                # 訓練模型
+                model = ID3DecisionTree(
+                    max_depth=self.max_depth, 
+                    min_samples_split=self.min_samples_split
+                )
+                model.fit(X_train, y_train, available_features)
+                
+                # 準備測試資料
+                X_test, y_test = self.prepare_data(
+                    test_df, available_features, 'ReturnMean_year_Label'
+                )
+                
+                # 預測
+                predictions = model.predict(X_test)
+                
+                # 計算選中股票的平均報酬率
+                positive_mask = predictions == 1
+                if np.sum(positive_mask) > 0:
+                    selected_returns = test_df.loc[
+                        test_df.index[positive_mask], 'Return'
+                    ].values
+                    avg_return = np.mean(selected_returns)
+                    num_selected = np.sum(positive_mask)
                 else:
-                    positive_returns = test_returns[positive_indices]
-                    top_relative_indices = np.argsort(positive_returns)[-top_n_stocks:]
-                    selected_indices = positive_indices[top_relative_indices]
-            else:
-                selected_indices = positive_indices
+                    avg_return = 0
+                    num_selected = 0
+                
+                # 計算準確率
+                accuracy = np.mean(predictions == y_test)
+                
+                results.append({
+                    'combination': i + 1,
+                    'features': available_features,
+                    'avg_return': avg_return,
+                    'num_selected': num_selected,
+                    'accuracy': accuracy,
+                    'model': model
+                })
+                
+                # 更新最佳結果
+                if avg_return > best_return:
+                    best_return = avg_return
+                    best_features = available_features
+                    best_model = model
+                    
+                print(f"組合 {i+1}: 平均報酬率 = {avg_return:.4f}%, 選中股票數 = {num_selected}, 準確率 = {accuracy:.4f}")
+                
+            except Exception as e:
+                print(f"組合 {i+1} 發生錯誤: {e}")
+                continue
         
-        selected_returns = test_returns[selected_indices]
-        selected_stocks = stock_names[selected_indices]
-        
-        return selected_returns, selected_stocks
+        return best_model, best_features, best_return, results
     
-    def rolling_window_backtest(self, start_year=1997, end_year=2008):
-        """
-        執行rolling window回測
-        """
+    def run_time_series_validation(self, df):
+        """時間序列交叉驗證"""
+        # 獲取所有年份
+        years = sorted(df['年月'].unique())
+        
         results = []
+        all_combination_results = []
         
-        print("開始ID3決策樹股票選擇回測...")
-        print("=" * 60)
-        
-        for test_year in range(start_year + 1, end_year + 1):
-            train_year = test_year - 1
+        # 時間序列驗證
+        for i in range(len(years) - 1):
+            train_year = years[i]
+            test_year = years[i + 1]
             
-            print(f"\n【第 {test_year - start_year} 年】訓練年份: {train_year}, 測試年份: {test_year}")
+            print(f"\n=== 訓練年份: {train_year}, 測試年份: {test_year} ===")
             
-            # 取得訓練和測試資料
-            train_data = self.get_year_data(train_year)
-            test_data = self.get_year_data(test_year)
+            train_data = df[df['年月'] == train_year].copy()
+            test_data = df[df['年月'] == test_year].copy()
             
-            if len(train_data) == 0 or len(test_data) == 0:
-                print(f"  警告: {train_year} 或 {test_year} 年度無資料")
-                continue
+            # 重設索引
+            train_data = train_data.reset_index(drop=True)
+            test_data = test_data.reset_index(drop=True)
             
-            print(f"  訓練資料: {len(train_data)} 檔股票")
-            print(f"  測試資料: {len(test_data)} 檔股票")
-            
-            # 尋找最佳參數並訓練模型
-            best_params, best_model = self.find_best_parameters(train_data)
-            
-            if best_params is None:
-                print(f"  錯誤: 無法找到有效參數")
-                continue
-            
-            print(f"  最佳參數: 深度={best_params['max_depth']}, "
-                  f"最小分割={best_params['min_samples_split']}, "
-                  f"最小葉節點={best_params['min_samples_leaf']}")
-            print(f"  特徵數={len(best_params['features'])}")
-            print(f"  訓練集平均報酬率: {best_params['avg_return']:.4f}%")
-            print(f"  訓練集選中股票數: {best_params['n_selected']}")
-            
-            # 使用最佳參數選擇測試年度的股票
-            selected_returns, selected_stocks = self.select_stocks_with_tree(
-                best_model, test_data, best_params['features']
+            # 訓練並評估
+            best_model, best_features, best_return, combination_results = self.evaluate_feature_combinations(
+                train_data, test_data
             )
             
-            # 計算測試結果
-            test_avg_return = np.mean(selected_returns)
-            test_std_return = np.std(selected_returns)
-            
-            result = {
-                'test_year': test_year,
+            results.append({
                 'train_year': train_year,
-                'max_depth': best_params['max_depth'],
-                'min_samples_split': best_params['min_samples_split'],
-                'min_samples_leaf': best_params['min_samples_leaf'],
-                'n_features': len(best_params['features']),
-                'feature_names': best_params['feature_names'],
-                'train_return': best_params['avg_return'],
-                'train_n_selected': best_params['n_selected'],
-                'test_return': test_avg_return,
-                'test_std': test_std_return,
-                'test_n_selected': len(selected_returns),
-                'selected_returns': selected_returns,
-                'selected_stocks': selected_stocks
-            }
+                'test_year': test_year,
+                'best_features': best_features,
+                'avg_return': best_return,
+                'model': best_model
+            })
             
-            results.append(result)
+            all_combination_results.append({
+                'train_year': train_year,
+                'test_year': test_year,
+                'combinations': combination_results
+            })
             
-            print(f"  測試集平均報酬率: {test_avg_return:.4f}% ± {test_std_return:.4f}%")
-            print(f"  測試集選中股票數: {len(selected_returns)}")
-            print(f"  選中股票: {', '.join(selected_stocks[:5])}{'...' if len(selected_stocks) > 5 else ''}")
-            print("-" * 60)
+            print(f"最佳平均報酬率: {best_return:.4f}%")
+            print(f"最佳特徵組合: {best_features}")
+            print("-" * 80)
         
-        return results
+        return results, all_combination_results
     
-    def save_results_to_csv(self, results, filename='id3_stock_selection_results.csv'):
-        """
-        將結果儲存為CSV檔案
-        """
-        if not results:
-            print("無結果可儲存")
-            return
+    def save_results_to_csv(self, results, all_combination_results, output_dir='results'):
+        """將結果儲存為CSV檔案"""
+        # 建立輸出目錄
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         
-        # 準備主要結果CSV資料
-        csv_data = []
+        # 1. 年度最佳結果
+        yearly_results = []
         for result in results:
-            csv_data.append({
-                'test_year': result['test_year'],
-                'train_year': result['train_year'],
-                'max_depth': result['max_depth'],
-                'min_samples_split': result['min_samples_split'],
-                'min_samples_leaf': result['min_samples_leaf'],
-                'n_features': result['n_features'],
-                'train_return': result['train_return'],
-                'train_n_selected': result['train_n_selected'],
-                'test_return': result['test_return'],
-                'test_std': result['test_std'],
-                'test_n_selected': result['test_n_selected']
+            yearly_results.append({
+                '訓練年份': result['train_year'],
+                '測試年份': result['test_year'],
+                '最佳報酬率(%)': result['avg_return'],
+                '最佳特徵組合': ', '.join(result['best_features']) if result['best_features'] else ''
             })
         
-        # 寫入主要結果CSV檔案
-        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['test_year', 'train_year', 'max_depth', 'min_samples_split', 
-                         'min_samples_leaf', 'n_features', 'train_return', 'train_n_selected', 
-                         'test_return', 'test_std', 'test_n_selected']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        yearly_df = pd.DataFrame(yearly_results)
+        yearly_df.to_csv(f'{output_dir}/yearly_best_results.csv', index=False, encoding='utf-8-sig')
+        
+        # 2. 所有組合詳細結果
+        all_results = []
+        for year_result in all_combination_results:
+            train_year = year_result['train_year']
+            test_year = year_result['test_year']
             
-            writer.writeheader()
-            for row in csv_data:
-                writer.writerow(row)
+            for combo in year_result['combinations']:
+                all_results.append({
+                    '訓練年份': train_year,
+                    '測試年份': test_year,
+                    '特徵組合編號': combo['combination'],
+                    '特徵組合': ', '.join(combo['features']),
+                    '平均報酬率(%)': combo['avg_return'],
+                    '選中股票數': combo['num_selected'],
+                    '準確率': combo['accuracy']
+                })
         
-        print(f"主要結果已儲存至: {filename}")
+        all_df = pd.DataFrame(all_results)
+        all_df.to_csv(f'{output_dir}/all_combinations_results.csv', index=False, encoding='utf-8-sig')
         
-        # 儲存詳細的選股結果
-        detail_filename = filename.replace('.csv', '_selected_stocks.csv')
-        with open(detail_filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['test_year', 'stock_name', 'return']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        # 3. 特徵重要性統計
+        feature_usage = {}
+        for result in results:
+            if result['best_features']:
+                for feature in result['best_features']:
+                    feature_usage[feature] = feature_usage.get(feature, 0) + 1
+        
+        feature_importance = []
+        for feature, count in feature_usage.items():
+            feature_importance.append({
+                '特徵名稱': feature,
+                '使用次數': count,
+                '使用率(%)': count / len(results) * 100
+            })
+        
+        feature_df = pd.DataFrame(feature_importance)
+        feature_df = feature_df.sort_values('使用次數', ascending=False)
+        feature_df.to_csv(f'{output_dir}/feature_importance.csv', index=False, encoding='utf-8-sig')
+        
+        print(f"\n結果已儲存至 {output_dir} 目錄：")
+        print(f"- yearly_best_results.csv: 年度最佳結果")
+        print(f"- all_combinations_results.csv: 所有組合詳細結果")
+        print(f"- feature_importance.csv: 特徵重要性統計")
+    
+    def plot_results(self, results, all_combination_results, output_dir='results'):
+        """繪製結果圖表"""
+        # 建立輸出目錄
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # 1. 年度報酬率趨勢圖
+        plt.figure(figsize=(12, 6))
+        years = [f"{r['train_year']}-{r['test_year']}" for r in results]
+        returns = [r['avg_return'] for r in results]
+        
+        plt.plot(years, returns, marker='o', linewidth=2, markersize=8)
+        plt.title('ID3決策樹股票選擇 - 年度報酬率趨勢', fontsize=16, fontweight='bold')
+        plt.xlabel('年份區間', fontsize=12)
+        plt.ylabel('平均報酬率 (%)', fontsize=12)
+        plt.xticks(rotation=45)
+        plt.grid(True, alpha=0.3)
+        plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/yearly_returns_trend.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # 2. 特徵重要性圖
+        feature_usage = {}
+        for result in results:
+            if result['best_features']:
+                for feature in result['best_features']:
+                    feature_usage[feature] = feature_usage.get(feature, 0) + 1
+        
+        if feature_usage:
+            plt.figure(figsize=(12, 8))
+            features = list(feature_usage.keys())
+            counts = list(feature_usage.values())
             
-            writer.writeheader()
-            for result in results:
-                for stock, ret in zip(result['selected_stocks'], result['selected_returns']):
-                    writer.writerow({
-                        'test_year': result['test_year'],
-                        'stock_name': stock,
-                        'return': ret
-                    })
-        
-        print(f"選股詳細結果已儲存至: {detail_filename}")
-        
-        # 儲存特徵使用記錄
-        feature_filename = filename.replace('.csv', '_features.csv')
-        with open(feature_filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['test_year', 'feature_name']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            # 按使用次數排序
+            sorted_data = sorted(zip(features, counts), key=lambda x: x[1], reverse=True)
+            features, counts = zip(*sorted_data)
             
-            writer.writeheader()
-            for result in results:
-                for feature in result['feature_names']:
-                    writer.writerow({
-                        'test_year': result['test_year'],
-                        'feature_name': feature
-                    })
+            plt.barh(features, counts, color='skyblue', edgecolor='navy', alpha=0.7)
+            plt.title('特徵使用頻率統計', fontsize=16, fontweight='bold')
+            plt.xlabel('使用次數', fontsize=12)
+            plt.ylabel('特徵名稱', fontsize=12)
+            
+            # 在每個條形上顯示數值
+            for i, count in enumerate(counts):
+                plt.text(count + 0.1, i, str(count), va='center', fontsize=10)
+            
+            plt.tight_layout()
+            plt.savefig(f'{output_dir}/feature_importance.png', dpi=300, bbox_inches='tight')
+            plt.show()
         
-        print(f"特徵使用記錄已儲存至: {feature_filename}")
+        # 3. 報酬率分佈直方圖
+        plt.figure(figsize=(10, 6))
+        returns = [r['avg_return'] for r in results if r['avg_return'] is not None]
+        
+        plt.hist(returns, bins=10, color='lightgreen', edgecolor='darkgreen', alpha=0.7)
+        plt.title('報酬率分佈直方圖', fontsize=16, fontweight='bold')
+        plt.xlabel('平均報酬率 (%)', fontsize=12)
+        plt.ylabel('頻率', fontsize=12)
+        plt.axvline(np.mean(returns), color='red', linestyle='--', 
+                   label=f'平均值: {np.mean(returns):.2f}%', linewidth=2)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/returns_distribution.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # 4. 組合表現比較圖
+        if all_combination_results:
+            plt.figure(figsize=(15, 8))
+            
+            # 收集所有組合的平均表現
+            combo_performance = {}
+            for year_result in all_combination_results:
+                for combo in year_result['combinations']:
+                    combo_id = combo['combination']
+                    if combo_id not in combo_performance:
+                        combo_performance[combo_id] = []
+                    combo_performance[combo_id].append(combo['avg_return'])
+            
+            # 計算每個組合的平均表現
+            combo_means = {}
+            combo_stds = {}
+            for combo_id, returns in combo_performance.items():
+                combo_means[combo_id] = np.mean(returns)
+                combo_stds[combo_id] = np.std(returns)
+            
+            combo_ids = list(combo_means.keys())
+            means = list(combo_means.values())
+            stds = list(combo_stds.values())
+            
+            plt.bar(combo_ids, means, yerr=stds, capsize=5, 
+                   color='lightcoral', edgecolor='darkred', alpha=0.7)
+            plt.title('不同特徵組合的平均表現比較', fontsize=16, fontweight='bold')
+            plt.xlabel('特徵組合編號', fontsize=12)
+            plt.ylabel('平均報酬率 (%)', fontsize=12)
+            plt.grid(True, alpha=0.3)
+            plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(f'{output_dir}/combination_performance.png', dpi=300, bbox_inches='tight')
+            plt.show()
+        
+        # 5. 統計摘要表
+        self.create_summary_table(results, output_dir)
+        
+        print(f"\n圖表已儲存至 {output_dir} 目錄：")
+        print(f"- yearly_returns_trend.png: 年度報酬率趨勢圖")
+        print(f"- feature_importance.png: 特徵重要性圖")
+        print(f"- returns_distribution.png: 報酬率分佈直方圖")
+        print(f"- combination_performance.png: 組合表現比較圖")
+        print(f"- summary_table.png: 統計摘要表")
+    
+    def create_summary_table(self, results, output_dir):
+        """建立統計摘要表"""
+        returns = [r['avg_return'] for r in results if r['avg_return'] is not None]
+        
+        if not returns:
+            return
+        
+        # 計算統計數據
+        stats = {
+            '項目': ['平均報酬率', '最佳報酬率', '最差報酬率', '標準差', '正報酬率次數', '總測試次數'],
+            '數值': [
+                f"{np.mean(returns):.4f}%",
+                f"{max(returns):.4f}%",
+                f"{min(returns):.4f}%",
+                f"{np.std(returns):.4f}%",
+                f"{sum(1 for r in returns if r > 0)}",
+                f"{len(returns)}"
+            ]
+        }
+        
+        # 建立表格圖
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.axis('tight')
+        ax.axis('off')
+        
+        table = ax.table(cellText=list(zip(stats['項目'], stats['數值'])),
+                        colLabels=['統計項目', '數值'],
+                        cellLoc='center',
+                        loc='center')
+        
+        table.auto_set_font_size(False)
+        table.set_fontsize(12)
+        table.scale(1.2, 1.5)
+        
+        # 設定表格樣式
+        for i in range(len(stats['項目']) + 1):
+            for j in range(2):
+                if i == 0:  # 標題行
+                    table[(i, j)].set_facecolor('#4CAF50')
+                    table[(i, j)].set_text_props(weight='bold', color='white')
+                else:
+                    table[(i, j)].set_facecolor('#f0f0f0' if i % 2 == 0 else 'white')
+        
+        plt.title('ID3決策樹股票選擇 - 統計摘要', fontsize=16, fontweight='bold', pad=20)
+        plt.savefig(f'{output_dir}/summary_table.png', dpi=300, bbox_inches='tight')
+        plt.show()
     
     def analyze_results(self, results):
-        """
-        分析回測結果
-        """
-        if not results:
-            print("無結果可分析")
-            return None
+        """分析結果"""
+        print(f"\n{'='*60}")
+        print(f"{'ID3決策樹股票選擇結果分析':^60}")
+        print(f"{'='*60}")
         
-        # 計算總體統計
-        test_returns = [r['test_return'] for r in results]
-        train_returns = [r['train_return'] for r in results]
+        # 計算整體表現
+        avg_returns = [r['avg_return'] for r in results if r['avg_return'] is not None]
         
-        print("\n" + "=" * 60)
-        print("ID3決策樹股票選擇結果分析")
-        print("=" * 60)
-        print(f"測試期間: {results[0]['test_year']} - {results[-1]['test_year']}")
-        print(f"回測次數: {len(results)}")
-        print()
-        print("【測試集績效】")
-        print(f"平均報酬率: {np.mean(test_returns):.4f}%")
-        print(f"報酬率標準差: {np.std(test_returns):.4f}%")
-        print(f"最佳報酬率: {np.max(test_returns):.4f}%")
-        print(f"最差報酬率: {np.min(test_returns):.4f}%")
-        print(f"勝率: {sum(1 for r in test_returns if r > 0) / len(test_returns) * 100:.2f}%")
+        if avg_returns:
+            overall_avg_return = np.mean(avg_returns)
+            best_return = max(avg_returns)
+            worst_return = min(avg_returns)
+            std_return = np.std(avg_returns)
+            
+            print(f"平均報酬率: {overall_avg_return:.4f}%")
+            print(f"最佳報酬率: {best_return:.4f}%")
+            print(f"最差報酬率: {worst_return:.4f}%")
+            print(f"報酬率標準差: {std_return:.4f}%")
+            print(f"正報酬率次數: {sum(1 for r in avg_returns if r > 0)}/{len(avg_returns)}")
         
-        if np.std(test_returns) != 0:
-            sharpe_ratio = np.mean(test_returns) / np.std(test_returns)
-            print(f"夏普比率: {sharpe_ratio:.4f}")
-        
-        print()
-        print("【訓練集績效】")
-        print(f"平均報酬率: {np.mean(train_returns):.4f}%")
-        print(f"報酬率標準差: {np.std(train_returns):.4f}%")
-        
-        # 年度詳細結果
-        print()
-        print("【年度詳細結果】")
-        print("年份   深度  分割  葉節點  特徵數  訓練報酬率  測試報酬率  選股數量")
-        print("-" * 70)
+        # 特徵重要性分析
+        feature_usage = {}
         for result in results:
-            print(f"{result['test_year']}    {result['max_depth']:2d}    {result['min_samples_split']:2d}     "
-                  f"{result['min_samples_leaf']:2d}      {result['n_features']:2d}     "
-                  f"{result['train_return']:8.2f}%   {result['test_return']:8.2f}%     {result['test_n_selected']:2d}")
+            if result['best_features']:
+                for feature in result['best_features']:
+                    feature_usage[feature] = feature_usage.get(feature, 0) + 1
+        
+        print(f"\n{'特徵使用頻率分析':^60}")
+        print("-" * 60)
+        for feature, count in sorted(feature_usage.items(), 
+                                    key=lambda x: x[1], reverse=True):
+            usage_rate = count / len(results) * 100
+            print(f"{feature:<25}: {count:>2}/{len(results)} ({usage_rate:>5.1f}%)")
         
         return {
-            'avg_test_return': np.mean(test_returns),
-            'std_test_return': np.std(test_returns),
-            'avg_train_return': np.mean(train_returns),
-            'best_test_return': np.max(test_returns),
-            'worst_test_return': np.min(test_returns),
-            'win_rate': sum(1 for r in test_returns if r > 0) / len(test_returns),
-            'sharpe_ratio': np.mean(test_returns) / np.std(test_returns) if np.std(test_returns) != 0 else 0,
-            'results': results
+            'overall_avg_return': overall_avg_return if avg_returns else 0,
+            'best_return': best_return if avg_returns else 0,
+            'worst_return': worst_return if avg_returns else 0,
+            'std_return': std_return if avg_returns else 0,
+            'feature_usage': feature_usage
         }
 
+
 def main():
-    """
-    主函數
-    """
-    print("ID3決策樹股票選擇系統")
-    print("=" * 60)
+    """主程式"""
+    print("載入資料...")
     
-    # 初始化選股器
+    # 讀取資料
     try:
-        selector = ID3StockSelector('top200.xlsx')
-        print(f"成功載入資料: {len(selector.data)} 筆記錄")
-        print(f"資料年份範圍: {selector.data['年月'].min()} - {selector.data['年月'].max()}")
-        print(f"特徵數量: {len(selector.feature_columns)}")
+        df = pd.read_excel('top200.xlsx')
+        print(f"成功載入資料，共 {len(df)} 筆記錄")
+    except FileNotFoundError:
+        print("錯誤: 找不到 top200.xlsx 檔案")
+        return
     except Exception as e:
-        print(f"載入資料失敗: {e}")
-        return None
+        print(f"載入資料時發生錯誤: {e}")
+        return
     
-    # 執行回測
-    try:
-        results = selector.rolling_window_backtest()
-        
-        if not results:
-            print("回測失敗，無結果產生")
-            return None
-        
-        # 分析結果
-        analysis = selector.analyze_results(results)
-        
-        # 儲存結果到CSV
-        selector.save_results_to_csv(results)
-        
-        return analysis
-        
-    except Exception as e:
-        print(f"回測過程發生錯誤: {e}")
-        return None
+    # 過濾掉200912的資料
+    original_count = len(df)
+    df = df[df['年月'] != 200912]
+    filtered_count = len(df)
+    print(f"過濾後剩餘 {filtered_count} 筆記錄 (移除 {original_count - filtered_count} 筆)")
+    
+    # 檢查必要欄位
+    required_columns = ['年月', 'Return', 'ReturnMean_year_Label']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        print(f"錯誤: 缺少必要欄位: {missing_columns}")
+        return
+    
+    # 初始化股票選擇器
+    print("\n初始化ID3決策樹股票選擇器...")
+    stock_selector = StockSelectionID3(max_depth=6, min_samples_split=10)
+    
+    # 執行時間序列驗證
+    print("開始執行時間序列交叉驗證...")
+    results, combination_results = stock_selector.run_time_series_validation(df)
+    
+    # 分析結果
+    analysis = stock_selector.analyze_results(results)
+    
+    # 儲存CSV結果
+    print("\n儲存結果到CSV檔案...")
+    stock_selector.save_results_to_csv(results, combination_results)
+    
+    # 繪製圖表
+    print("\n繪製結果圖表...")
+    stock_selector.plot_results(results, combination_results)
+    
+    # 顯示詳細結果
+    print(f"\n{'年度詳細結果':^60}")
+    print("-" * 60)
+    for result in results:
+        print(f"{result['train_year']} → {result['test_year']}: {result['avg_return']:>8.4f}%")
+    
+    return results, combination_results, analysis
+
 
 if __name__ == "__main__":
-    analysis = main()
+    # 執行主程式
+    results, combination_results, analysis = main()
+    
+    print(f"\n{'='*60}")
+    print("程式執行完成！")
+    print("結果檔案已儲存至 'results' 目錄")
+    print("包含CSV檔案和PNG圖表")
+    print(f"{'='*60}")
