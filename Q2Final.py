@@ -368,6 +368,84 @@ class StockDecisionTreeSelector:
         self.create_feature_importance_chart()
         self.create_decision_tree_visualization()
     
+    def create_top10_individual_returns_chart(self):
+        """創建前10支股票各自的年化報酬折線圖"""
+        if not self.results:
+            return
+        
+        setup_chinese_font()
+        
+        # 收集前10支股票的個別報酬率資料
+        stock_returns = {}
+        years = []
+        
+        for result in self.results:
+            if result['top10_stocks'] is not None:
+                year = result['test_year']
+                years.append(year)
+                stocks = result['top10_stocks']
+                
+                for idx, (_, stock) in enumerate(stocks.iterrows()):
+                    stock_name = f"第{idx+1}名股票"
+                    if stock_name not in stock_returns:
+                        stock_returns[stock_name] = []
+                    stock_returns[stock_name].append(stock['Return'])
+        
+        if not stock_returns:
+            return
+        
+        # 創建折線圖
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
+        fig.suptitle('前10支股票各自年化報酬率趨勢', fontsize=16, fontweight='bold')
+        
+        # 上圖：所有10支股票的折線圖
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        for i, (stock_name, returns) in enumerate(stock_returns.items()):
+            if len(returns) == len(years):  # 確保資料完整
+                ax1.plot(years, returns, marker='o', linewidth=2, markersize=4, 
+                        color=colors[i], label=stock_name, alpha=0.8)
+        
+        ax1.set_title('前10支股票個別年化報酬率')
+        ax1.set_xlabel('年份')
+        ax1.set_ylabel('年化報酬率 (%)')
+        ax1.grid(True, alpha=0.3)
+        ax1.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        # 下圖：平均報酬率和標準差
+        if len(years) > 0:
+            avg_returns = []
+            std_returns = []
+            
+            for year_idx in range(len(years)):
+                year_returns = [stock_returns[stock][year_idx] for stock in stock_returns 
+                              if len(stock_returns[stock]) > year_idx]
+                if year_returns:
+                    avg_returns.append(np.mean(year_returns))
+                    std_returns.append(np.std(year_returns))
+                else:
+                    avg_returns.append(0)
+                    std_returns.append(0)
+            
+            ax2.plot(years, avg_returns, marker='o', linewidth=3, markersize=8, 
+                    color='red', label='平均報酬率')
+            ax2.fill_between(years, 
+                           np.array(avg_returns) - np.array(std_returns),
+                           np.array(avg_returns) + np.array(std_returns),
+                           alpha=0.3, color='red', label='±1標準差')
+        
+        ax2.set_title('前10支股票平均報酬率與變異性')
+        ax2.set_xlabel('年份')
+        ax2.set_ylabel('年化報酬率 (%)')
+        ax2.grid(True, alpha=0.3)
+        ax2.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        ax2.legend()
+        
+        plt.tight_layout()
+        individual_chart_path = os.path.join(self.output_dir, 'dt_top10_individual_returns.png')
+        plt.savefig(individual_chart_path, dpi=300, bbox_inches='tight')
+        plt.show()
+    
     def create_top10_analysis_chart(self):
         """創建前10支股票專門分析圖表"""
         if not self.results:
@@ -709,6 +787,7 @@ def main():
     
     selector.save_results_to_csv()
     selector.create_visualizations()
+    selector.create_top10_individual_returns_chart()  # 新增：前10支股票各自的年化報酬折線圖
     selector.create_top10_analysis_chart()
     selector.create_performance_comparison_chart()
     selector.save_analysis_report()
