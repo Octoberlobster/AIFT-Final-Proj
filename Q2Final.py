@@ -15,19 +15,13 @@ warnings.filterwarnings('ignore')
 def setup_chinese_font():
     system = platform.system()
     if system == 'Windows':
-        # Windows系統使用微軟正黑體或SimHei
-        try:
-            plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Microsoft YaHei']
-        except:
-            plt.rcParams['font.sans-serif'] = ['SimHei']
+        plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Microsoft YaHei']
     elif system == 'Darwin':  # macOS
         plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Heiti TC', 'STHeiti']
     else:  # Linux
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'WenQuanYi Micro Hei', 'SimHei']
-    
-    plt.rcParams['axes.unicode_minus'] = False  # 解決負號顯示問題
+    plt.rcParams['axes.unicode_minus'] = False
 
-# 在程式開始時設定中文字體
 setup_chinese_font()
 
 class StockDecisionTreeSelector:
@@ -55,58 +49,41 @@ class StockDecisionTreeSelector:
         
     def load_and_preprocess_data(self, data_path):
         """載入並預處理資料"""
-        # 讀取Excel檔案
         data = pd.read_excel(data_path, sheet_name='Sheet1')
-        
-        # 提取年份
         data['年份'] = data['年月'].astype(str).str[:4].astype(int)
-        
-        # 移除2009年12月的資料
         data = data[data['年月'] != 200912]
-        
-        # 處理缺失值
         numeric_columns = data.select_dtypes(include=[np.number]).columns
         data[numeric_columns] = data[numeric_columns].fillna(data[numeric_columns].median())
-        
         return data
     
     def get_feature_combinations(self, max_features=8):
         """生成特徵組合"""
         feature_combinations = []
-        
-        # 單一特徵
         for feature in self.feature_columns:
             feature_combinations.append([feature])
-        
-        # 2-5個特徵的組合
         for r in range(2, min(6, max_features + 1)):
             if r <= 3:
                 for combo in combinations(self.feature_columns[:10], r):
                     feature_combinations.append(list(combo))
             else:
-                # 對於較大的組合，只選擇包含重要特徵的組合
                 important_features = ['市值(百萬元)', '股價淨值比', '資產報酬率ROA', 
                                     '營業利益率OPM', 'M淨值報酬率─稅後']
                 for combo in combinations(important_features, r):
                     feature_combinations.append(list(combo))
-        
-        return feature_combinations[:50]  # 限制組合數量
+        return feature_combinations[:50]
     
     def get_decision_tree_params(self):
         """獲取決策樹參數組合"""
         param_combinations = []
-        
-        # 不同的參數組合
         criterions = ['gini', 'entropy']
         max_depths = [3, 5, 7, 10, 15, None]
         min_samples_splits = [2, 5, 10, 20]
         min_samples_leafs = [1, 2, 5, 10]
         
-        # 生成參數組合（限制數量避免過多組合）
         for criterion in criterions:
-            for max_depth in max_depths[:4]:  # 限制深度選項
-                for min_samples_split in min_samples_splits[:3]:  # 限制分割選項
-                    for min_samples_leaf in min_samples_leafs[:3]:  # 限制葉子選項
+            for max_depth in max_depths[:4]:
+                for min_samples_split in min_samples_splits[:3]:
+                    for min_samples_leaf in min_samples_leafs[:3]:
                         param_combinations.append({
                             'criterion': criterion,
                             'max_depth': max_depth,
@@ -114,12 +91,10 @@ class StockDecisionTreeSelector:
                             'min_samples_leaf': min_samples_leaf,
                             'random_state': 42
                         })
-        
-        return param_combinations[:30]  # 限制參數組合數量
+        return param_combinations[:30]
     
     def train_and_evaluate(self, train_year, test_year, feature_combinations, param_combinations):
         """訓練並評估模型"""
-        # 準備訓練和測試資料
         train_data = self.data[self.data['年份'] == train_year].copy()
         test_data = self.data[self.data['年份'] == test_year].copy()
         
@@ -127,44 +102,52 @@ class StockDecisionTreeSelector:
             return None
         
         best_return = -np.inf
+        best_return_top10 = -np.inf
         best_params = {}
         best_selected_stocks = None
+        best_top10_stocks = None
         best_tree = None
         best_features = None
         
         for features in feature_combinations:
-            # 檢查特徵是否存在
             available_features = [f for f in features if f in train_data.columns]
             if len(available_features) == 0:
                 continue
                 
             try:
-                # 準備特徵資料
                 X_train = train_data[available_features].values
                 y_train = train_data['ReturnMean_year_Label'].values
                 X_test = test_data[available_features].values
                 
-                # 標準化（決策樹不一定需要，但可以幫助某些情況）
                 scaler = StandardScaler()
                 X_train_scaled = scaler.fit_transform(X_train)
                 X_test_scaled = scaler.transform(X_test)
                 
                 for params in param_combinations:
-                    # 訓練決策樹模型
                     dt = DecisionTreeClassifier(**params)
                     dt.fit(X_train_scaled, y_train)
                     
-                    # 預測測試集
                     y_pred = dt.predict(X_test_scaled)
+                    y_pred_proba = dt.predict_proba(X_test_scaled)[:, 1]  # 獲取正類概率
                     
-                    # 選擇預測為1（高於平均）的股票
+                    # 根據預測概率排序，選擇前10支股票
+                    test_data_with_proba = test_data.copy()
+                    test_data_with_proba['prediction_proba'] = y_pred_proba
+                    test_data_sorted = test_data_with_proba.sort_values('prediction_proba', ascending=False)
+                    
+                    # 選擇前10支股票
+                    top10_stocks = test_data_sorted.head(10)
+                    avg_return_top10 = top10_stocks['Return'].mean()
+                    
+                    # 原本的選股方法（選擇預測為1的股票）
                     selected_indices = np.where(y_pred == 1)[0]
-                    
                     if len(selected_indices) > 0:
                         selected_stocks = test_data.iloc[selected_indices]
                         avg_return = selected_stocks['Return'].mean()
                         
-                        if avg_return > best_return:
+                        # 以前10支股票的報酬率作為主要評估標準
+                        if avg_return_top10 > best_return_top10:
+                            best_return_top10 = avg_return_top10
                             best_return = avg_return
                             best_params = {
                                 'dt_params': params,
@@ -172,19 +155,36 @@ class StockDecisionTreeSelector:
                                 'num_features': len(available_features)
                             }
                             best_selected_stocks = selected_stocks
+                            best_top10_stocks = top10_stocks
+                            best_tree = dt
+                            best_features = available_features
+                    else:
+                        # 如果沒有預測為1的股票，仍然記錄前10支股票
+                        if avg_return_top10 > best_return_top10:
+                            best_return_top10 = avg_return_top10
+                            best_return = 0
+                            best_params = {
+                                'dt_params': params,
+                                'features': available_features,
+                                'num_features': len(available_features)
+                            }
+                            best_selected_stocks = None
+                            best_top10_stocks = top10_stocks
                             best_tree = dt
                             best_features = available_features
                             
-            except Exception as e:
+            except Exception:
                 continue
         
         return {
             'train_year': train_year,
             'test_year': test_year,
             'best_return': best_return,
+            'best_return_top10': best_return_top10,
             'best_params': best_params,
             'num_selected_stocks': len(best_selected_stocks) if best_selected_stocks is not None else 0,
             'selected_stocks': best_selected_stocks,
+            'top10_stocks': best_top10_stocks,
             'best_tree': best_tree,
             'best_features': best_features
         }
@@ -207,9 +207,10 @@ class StockDecisionTreeSelector:
             
             result = self.train_and_evaluate(train_year, test_year, feature_combinations, param_combinations)
             
-            if result and result['best_return'] != -np.inf:
+            if result and result['best_return_top10'] != -np.inf:
                 self.results.append(result)
-                print(f"最佳平均報酬率: {result['best_return']:.4f}%")
+                print(f"前10支股票平均報酬率: {result['best_return_top10']:.4f}%")
+                print(f"所有選中股票平均報酬率: {result['best_return']:.4f}%")
                 print(f"最佳參數: {result['best_params']['dt_params']}")
                 print(f"最佳特徵數量: {result['best_params']['num_features']}")
                 print(f"選中股票數量: {result['num_selected_stocks']}")
@@ -222,16 +223,17 @@ class StockDecisionTreeSelector:
             print("沒有結果可儲存")
             return
         
-        # 準備結果資料
         results_data = []
         selected_stocks_data = []
+        top10_stocks_data = []
         
         for result in self.results:
             dt_params = result['best_params']['dt_params']
             results_data.append({
                 '訓練年份': result['train_year'],
                 '測試年份': result['test_year'],
-                '最佳平均報酬率(%)': result['best_return'],
+                '前10支股票平均報酬率(%)': result['best_return_top10'],
+                '所有選中股票平均報酬率(%)': result['best_return'],
                 '最佳準則': dt_params['criterion'],
                 '最大深度': dt_params['max_depth'],
                 '最小分割樣本數': dt_params['min_samples_split'],
@@ -241,30 +243,47 @@ class StockDecisionTreeSelector:
                 '最佳特徵組合': ', '.join(result['best_params']['features'])
             })
             
-            # 儲存選中的股票詳細資訊
+            # 儲存所有選中股票詳細資訊
             if result['selected_stocks'] is not None:
                 stocks = result['selected_stocks'].copy()
                 stocks['訓練年份'] = result['train_year']
                 stocks['測試年份'] = result['test_year']
                 stocks['使用準則'] = dt_params['criterion']
                 stocks['最大深度'] = dt_params['max_depth']
+                stocks['選股類型'] = '預測為高於平均'
                 selected_stocks_data.append(stocks)
+            
+            # 儲存前10支股票詳細資訊
+            if result['top10_stocks'] is not None:
+                top10_stocks = result['top10_stocks'].copy()
+                top10_stocks['訓練年份'] = result['train_year']
+                top10_stocks['測試年份'] = result['test_year']
+                top10_stocks['使用準則'] = dt_params['criterion']
+                top10_stocks['最大深度'] = dt_params['max_depth']
+                top10_stocks['排名'] = range(1, len(top10_stocks) + 1)
+                top10_stocks_data.append(top10_stocks)
         
         # 儲存主要結果
         results_df = pd.DataFrame(results_data)
         results_path = os.path.join(self.output_dir, 'decision_tree_stock_selection_results.csv')
         results_df.to_csv(results_path, index=False, encoding='utf-8-sig')
         
-        # 儲存選中股票詳細資訊
+        # 儲存所有選中股票詳細資訊
         if selected_stocks_data:
             all_selected_stocks = pd.concat(selected_stocks_data, ignore_index=True)
             stocks_path = os.path.join(self.output_dir, 'dt_selected_stocks_details.csv')
             all_selected_stocks.to_csv(stocks_path, index=False, encoding='utf-8-sig')
         
+        # 儲存前10支股票詳細資訊
+        if top10_stocks_data:
+            all_top10_stocks = pd.concat(top10_stocks_data, ignore_index=True)
+            top10_path = os.path.join(self.output_dir, 'dt_top10_stocks_details.csv')
+            all_top10_stocks.to_csv(top10_path, index=False, encoding='utf-8-sig')
+        
         print(f"結果已儲存到 {self.output_dir} 資料夾:")
         print(f"- decision_tree_stock_selection_results.csv (主要結果)")
-        print(f"- dt_selected_stocks_details.csv (選中股票詳細資訊)")
-        
+        print(f"- dt_selected_stocks_details.csv (所有選中股票詳細資訊)")
+        print(f"- dt_top10_stocks_details.csv (前10支股票詳細資訊)")
         return results_df
     
     def create_visualizations(self):
@@ -273,28 +292,28 @@ class StockDecisionTreeSelector:
             print("沒有結果可視覺化")
             return
         
-        # 確保中文字體設定
         setup_chinese_font()
         
-        # 準備資料
         years = [r['test_year'] for r in self.results]
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         criterions = [r['best_params']['dt_params']['criterion'] for r in self.results]
         max_depths = [r['best_params']['dt_params']['max_depth'] for r in self.results]
         num_features = [r['best_params']['num_features'] for r in self.results]
         num_stocks = [r['num_selected_stocks'] for r in self.results]
         
-        # 創建主要分析圖表
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
         fig.suptitle('決策樹股票選股模型分析結果', fontsize=16, fontweight='bold')
         
-        # 1. 年度平均報酬率趨勢
-        axes[0, 0].plot(years, returns, marker='o', linewidth=2, markersize=8, color='green')
-        axes[0, 0].set_title('年度最佳平均報酬率趨勢')
+        # 1. 年度報酬率趨勢比較（前10 vs 所有選中）
+        axes[0, 0].plot(years, returns_top10, marker='o', linewidth=2, markersize=8, color='green', label='前10支股票')
+        axes[0, 0].plot(years, returns, marker='s', linewidth=2, markersize=6, color='blue', label='所有選中股票')
+        axes[0, 0].set_title('年度平均報酬率趨勢比較')
         axes[0, 0].set_xlabel('年份')
         axes[0, 0].set_ylabel('平均報酬率 (%)')
         axes[0, 0].grid(True, alpha=0.3)
         axes[0, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        axes[0, 0].legend()
         
         # 2. 最佳準則分布
         criterion_counts = pd.Series(criterions).value_counts()
@@ -306,42 +325,126 @@ class StockDecisionTreeSelector:
         
         # 3. 最大深度分布
         depth_counts = pd.Series([d if d is not None else 'None' for d in max_depths]).value_counts()
-        axes[1, 0].bar(range(len(depth_counts)), depth_counts.values, alpha=0.7, color='orange')
-        axes[1, 0].set_xticks(range(len(depth_counts)))
-        axes[1, 0].set_xticklabels(depth_counts.index, rotation=45)
-        axes[1, 0].set_title('最佳最大深度分布')
-        axes[1, 0].set_xlabel('最大深度')
-        axes[1, 0].set_ylabel('次數')
-        axes[1, 0].grid(True, alpha=0.3)
+        axes[0, 2].bar(range(len(depth_counts)), depth_counts.values, alpha=0.7, color='orange')
+        axes[0, 2].set_xticks(range(len(depth_counts)))
+        axes[0, 2].set_xticklabels(depth_counts.index, rotation=45)
+        axes[0, 2].set_title('最佳最大深度分布')
+        axes[0, 2].set_xlabel('最大深度')
+        axes[0, 2].set_ylabel('次數')
+        axes[0, 2].grid(True, alpha=0.3)
         
-        # 4. 特徵數量 vs 報酬率
-        scatter = axes[1, 1].scatter(num_features, returns, c=years, cmap='viridis', 
-                                   s=100, alpha=0.7)
-        axes[1, 1].set_title('特徵數量 vs 平均報酬率')
-        axes[1, 1].set_xlabel('特徵數量')
-        axes[1, 1].set_ylabel('平均報酬率 (%)')
+        # 4. 特徵數量 vs 前10支股票報酬率
+        scatter = axes[1, 0].scatter(num_features, returns_top10, c=years, cmap='viridis', s=100, alpha=0.7)
+        axes[1, 0].set_title('特徵數量 vs 前10支股票平均報酬率')
+        axes[1, 0].set_xlabel('特徵數量')
+        axes[1, 0].set_ylabel('平均報酬率 (%)')
+        axes[1, 0].grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=axes[1, 0], label='年份')
+        
+        # 5. 選中股票數量趨勢
+        axes[1, 1].plot(years, num_stocks, marker='s', linewidth=2, markersize=8, color='orange')
+        axes[1, 1].set_title('選中股票數量趨勢')
+        axes[1, 1].set_xlabel('年份')
+        axes[1, 1].set_ylabel('股票數量')
         axes[1, 1].grid(True, alpha=0.3)
-        plt.colorbar(scatter, ax=axes[1, 1], label='年份')
+        
+        # 6. 累積報酬率比較
+        cumulative_returns = np.cumsum(returns)
+        cumulative_returns_top10 = np.cumsum(returns_top10)
+        axes[1, 2].plot(years, cumulative_returns_top10, marker='o', linewidth=2, markersize=6, color='green', label='前10支股票')
+        axes[1, 2].plot(years, cumulative_returns, marker='s', linewidth=2, markersize=6, color='blue', label='所有選中股票')
+        axes[1, 2].fill_between(years, cumulative_returns_top10, alpha=0.3, color='green')
+        axes[1, 2].set_title('累積報酬率趨勢比較')
+        axes[1, 2].set_xlabel('年份')
+        axes[1, 2].set_ylabel('累積報酬率 (%)')
+        axes[1, 2].grid(True, alpha=0.3)
+        axes[1, 2].legend()
         
         plt.tight_layout()
-        
-        # 儲存圖表
         chart_path = os.path.join(self.output_dir, 'decision_tree_analysis_results.png')
         plt.savefig(chart_path, dpi=300, bbox_inches='tight')
         plt.show()
         
-        # 創建特徵重要性分析
         self.create_feature_importance_chart()
-        
-        # 創建決策樹視覺化
         self.create_decision_tree_visualization()
+    
+    def create_top10_analysis_chart(self):
+        """創建前10支股票專門分析圖表"""
+        if not self.results:
+            return
+        
+        setup_chinese_font()
+        
+        years = [r['test_year'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
+        
+        # 分析前10支股票的個別表現
+        yearly_top10_returns = {}
+        for result in self.results:
+            if result['top10_stocks'] is not None:
+                year = result['test_year']
+                stocks = result['top10_stocks']
+                yearly_top10_returns[year] = stocks['Return'].tolist()
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle('前10支股票詳細分析', fontsize=16, fontweight='bold')
+        
+        # 1. 前10支股票報酬率箱型圖
+        if yearly_top10_returns:
+            box_data = []
+            box_labels = []
+            for year in sorted(yearly_top10_returns.keys()):
+                box_data.append(yearly_top10_returns[year])
+                box_labels.append(str(year))
+            
+            axes[0, 0].boxplot(box_data, labels=box_labels)
+            axes[0, 0].set_title('前10支股票個別報酬率分布')
+            axes[0, 0].set_xlabel('年份')
+            axes[0, 0].set_ylabel('個別股票報酬率 (%)')
+            axes[0, 0].grid(True, alpha=0.3)
+            axes[0, 0].tick_params(axis='x', rotation=45)
+        
+        # 2. 前10支股票勝率統計
+        positive_years = sum(1 for r in returns_top10 if r > 0)
+        total_years = len(returns_top10)
+        win_rate = positive_years / total_years * 100
+        
+        axes[0, 1].pie([positive_years, total_years - positive_years], 
+                      labels=[f'正報酬\n({positive_years}年)', f'負報酬\n({total_years - positive_years}年)'],
+                      colors=['green', 'red'], autopct='%1.1f%%', startangle=90)
+        axes[0, 1].set_title(f'前10支股票勝率統計\n總勝率: {win_rate:.1f}%')
+        
+        # 3. 前10支股票年度報酬率趨勢
+        axes[1, 0].plot(years, returns_top10, marker='o', linewidth=2, markersize=8, color='green')
+        axes[1, 0].set_title('前10支股票年度平均報酬率趨勢')
+        axes[1, 0].set_xlabel('年份')
+        axes[1, 0].set_ylabel('平均報酬率 (%)')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        
+        # 4. 前10支股票統計摘要
+        mean_return = np.mean(returns_top10)
+        std_return = np.std(returns_top10)
+        max_return = np.max(returns_top10)
+        min_return = np.min(returns_top10)
+        
+        stats_text = f'統計摘要:\n平均報酬率: {mean_return:.2f}%\n標準差: {std_return:.2f}%\n最高報酬率: {max_return:.2f}%\n最低報酬率: {min_return:.2f}%\n夏普比率: {mean_return/std_return:.3f}'
+        
+        axes[1, 1].text(0.1, 0.5, stats_text, transform=axes[1, 1].transAxes, 
+                        fontsize=12, verticalalignment='center',
+                        bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        axes[1, 1].set_title('前10支股票績效統計')
+        axes[1, 1].axis('off')
+        
+        plt.tight_layout()
+        top10_chart_path = os.path.join(self.output_dir, 'dt_top10_analysis.png')
+        plt.savefig(top10_chart_path, dpi=300, bbox_inches='tight')
+        plt.show()
     
     def create_feature_importance_chart(self):
         """創建特徵重要性圖表"""
-        # 確保中文字體設定
         setup_chinese_font()
         
-        # 統計每個特徵被選中的次數
         feature_counts = {}
         for result in self.results:
             for feature in result['best_params']['features']:
@@ -350,7 +453,6 @@ class StockDecisionTreeSelector:
         if not feature_counts:
             return
         
-        # 排序並繪製
         sorted_features = sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)
         features, counts = zip(*sorted_features)
         
@@ -361,15 +463,12 @@ class StockDecisionTreeSelector:
         plt.title('特徵重要性分析（被選為最佳特徵的次數）')
         plt.grid(True, alpha=0.3)
         
-        # 添加數值標籤
         for i, bar in enumerate(bars):
             width = bar.get_width()
             plt.text(width + 0.1, bar.get_y() + bar.get_height()/2, 
                     str(counts[i]), ha='left', va='center')
         
         plt.tight_layout()
-        
-        # 儲存圖表
         feature_chart_path = os.path.join(self.output_dir, 'dt_feature_importance_analysis.png')
         plt.savefig(feature_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
@@ -379,14 +478,11 @@ class StockDecisionTreeSelector:
         if not self.results:
             return
         
-        # 確保中文字體設定
         setup_chinese_font()
         
-        # 選擇最佳表現的決策樹進行視覺化
-        best_result = max(self.results, key=lambda x: x['best_return'])
+        best_result = max(self.results, key=lambda x: x['best_return_top10'])
         
         if best_result['best_tree'] is not None:
-            # 創建決策樹圖表
             plt.figure(figsize=(20, 12))
             plot_tree(best_result['best_tree'], 
                      feature_names=best_result['best_features'],
@@ -396,12 +492,10 @@ class StockDecisionTreeSelector:
                      fontsize=10)
             plt.title(f'最佳決策樹視覺化 ({best_result["test_year"]}年)', fontsize=16, fontweight='bold')
             
-            # 儲存圖表
             tree_chart_path = os.path.join(self.output_dir, 'best_decision_tree_visualization.png')
             plt.savefig(tree_chart_path, dpi=300, bbox_inches='tight')
             plt.show()
             
-            # 儲存決策樹文字描述
             tree_rules = export_text(best_result['best_tree'], 
                                    feature_names=best_result['best_features'])
             
@@ -418,37 +512,43 @@ class StockDecisionTreeSelector:
         if not self.results:
             return
         
-        # 確保中文字體設定
         setup_chinese_font()
         
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         years = [r['test_year'] for r in self.results]
         
-        # 計算累積報酬率
         cumulative_returns = np.cumsum(returns)
+        cumulative_returns_top10 = np.cumsum(returns_top10)
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
-        # 年度報酬率
-        colors = ['green' if r > 0 else 'red' for r in returns]
-        ax1.bar(years, returns, color=colors, alpha=0.7)
+        # 年度報酬率比較
+        x = np.arange(len(years))
+        width = 0.35
+        ax1.bar(x - width/2, returns_top10, width, label='前10支股票', alpha=0.7, color='green')
+        ax1.bar(x + width/2, returns, width, label='所有選中股票', alpha=0.7, color='blue')
         ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-        ax1.set_title('決策樹模型年度報酬率分布')
+        ax1.set_title('決策樹模型年度報酬率比較')
         ax1.set_xlabel('年份')
         ax1.set_ylabel('報酬率 (%)')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(years)
+        ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # 累積報酬率
-        ax2.plot(years, cumulative_returns, marker='o', linewidth=2, markersize=6, color='blue')
+        # 累積報酬率比較
+        ax2.plot(years, cumulative_returns_top10, marker='o', linewidth=2, markersize=6, color='green', label='前10支股票')
+        ax2.plot(years, cumulative_returns, marker='s', linewidth=2, markersize=6, color='blue', label='所有選中股票')
+        ax2.fill_between(years, cumulative_returns_top10, alpha=0.3, color='green')
         ax2.fill_between(years, cumulative_returns, alpha=0.3, color='blue')
-        ax2.set_title('決策樹模型累積報酬率趨勢')
+        ax2.set_title('決策樹模型累積報酬率趨勢比較')
         ax2.set_xlabel('年份')
         ax2.set_ylabel('累積報酬率 (%)')
+        ax2.legend()
         ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        
-        # 儲存圖表
         performance_chart_path = os.path.join(self.output_dir, 'dt_performance_comparison.png')
         plt.savefig(performance_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
@@ -459,8 +559,8 @@ class StockDecisionTreeSelector:
             return
         
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         
-        # 統計決策樹參數使用情況
         criterions = [r['best_params']['dt_params']['criterion'] for r in self.results]
         max_depths = [r['best_params']['dt_params']['max_depth'] for r in self.results]
         
@@ -476,7 +576,15 @@ class StockDecisionTreeSelector:
 - 總測試年數: {len(self.results)}
 - 使用演算法: Decision Tree (類似ID3)
 
-績效統計:
+前10支股票績效統計:
+- 平均年報酬率: {np.mean(returns_top10):.4f}%
+- 報酬率標準差: {np.std(returns_top10):.4f}%
+- 最高年報酬率: {np.max(returns_top10):.4f}%
+- 最低年報酬率: {np.min(returns_top10):.4f}%
+- 正報酬年數: {sum(1 for r in returns_top10 if r > 0)}/{len(returns_top10)}
+- 勝率: {sum(1 for r in returns_top10 if r > 0)/len(returns_top10)*100:.2f}%
+
+所有選中股票績效統計:
 - 平均年報酬率: {np.mean(returns):.4f}%
 - 報酬率標準差: {np.std(returns):.4f}%
 - 最高年報酬率: {np.max(returns):.4f}%
@@ -498,7 +606,8 @@ class StockDecisionTreeSelector:
             dt_params = result['best_params']['dt_params']
             report += f"""
 {result['test_year']}年:
-  - 報酬率: {result['best_return']:.4f}%
+  - 前10支股票報酬率: {result['best_return_top10']:.4f}%
+  - 所有選中股票報酬率: {result['best_return']:.4f}%
   - 分割準則: {dt_params['criterion']}
   - 最大深度: {dt_params['max_depth']}
   - 最小分割樣本數: {dt_params['min_samples_split']}
@@ -508,15 +617,15 @@ class StockDecisionTreeSelector:
   - 主要特徵: {', '.join(result['best_params']['features'][:3])}{'...' if len(result['best_params']['features']) > 3 else ''}
 """
         
-        # 最佳表現年份
-        best_year_idx = np.argmax(returns)
+        best_year_idx = np.argmax(returns_top10)
         best_result = self.results[best_year_idx]
         best_dt_params = best_result['best_params']['dt_params']
         
         report += f"""
 
-最佳表現年份: {best_result['test_year']}
-  - 報酬率: {best_result['best_return']:.4f}%
+最佳表現年份（前10支股票）: {best_result['test_year']}
+  - 前10支股票報酬率: {best_result['best_return_top10']:.4f}%
+  - 所有選中股票報酬率: {best_result['best_return']:.4f}%
   - 分割準則: {best_dt_params['criterion']}
   - 最大深度: {best_dt_params['max_depth']}
   - 最小分割樣本數: {best_dt_params['min_samples_split']}
@@ -525,17 +634,19 @@ class StockDecisionTreeSelector:
   - 選中股票數: {best_result['num_selected_stocks']}
 
 風險指標:
-- 夏普比率: {np.mean(returns)/np.std(returns):.4f} (假設無風險利率為0)
-- 最大回撤: {self.calculate_max_drawdown(returns):.4f}%
+- 前10支股票夏普比率: {np.mean(returns_top10)/np.std(returns_top10):.4f} (假設無風險利率為0)
+- 所有選中股票夏普比率: {np.mean(returns)/np.std(returns):.4f} (假設無風險利率為0)
+- 前10支股票最大回撤: {self.calculate_max_drawdown(returns_top10):.4f}%
+- 所有選中股票最大回撤: {self.calculate_max_drawdown(returns):.4f}%
 
 決策樹優勢:
 - 模型可解釋性強，能夠產生明確的投資決策規則
 - 不需要假設資料分布，適合處理非線性關係
 - 能夠自動進行特徵選擇，找出最重要的財務指標
 - 對異常值相對不敏感
+- 基於預測概率的前10支股票選擇，提供精準的投資組合
 """
         
-        # 儲存報告
         report_path = os.path.join(self.output_dir, 'dt_analysis_report.txt')
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
@@ -556,57 +667,56 @@ class StockDecisionTreeSelector:
             return
         
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         
         print("\n" + "="*50)
         print("決策樹股票選股模型分析摘要")
         print("="*50)
         print(f"分析期間: {self.results[0]['train_year']}-{self.results[-1]['test_year']}")
         print(f"總測試年數: {len(self.results)}")
-        print(f"平均年報酬率: {np.mean(returns):.4f}%")
-        print(f"報酬率標準差: {np.std(returns):.4f}%")
-        print(f"最高年報酬率: {np.max(returns):.4f}%")
-        print(f"最低年報酬率: {np.min(returns):.4f}%")
-        print(f"正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}")
         
-        # 最佳表現年份
-        best_year_idx = np.argmax(returns)
+        print(f"\n前10支股票表現:")
+        print(f"  平均年報酬率: {np.mean(returns_top10):.4f}%")
+        print(f"  報酬率標準差: {np.std(returns_top10):.4f}%")
+        print(f"  最高年報酬率: {np.max(returns_top10):.4f}%")
+        print(f"  最低年報酬率: {np.min(returns_top10):.4f}%")
+        print(f"  正報酬年數: {sum(1 for r in returns_top10 if r > 0)}/{len(returns_top10)}")
+        
+        print(f"\n所有選中股票表現:")
+        print(f"  平均年報酬率: {np.mean(returns):.4f}%")
+        print(f"  報酬率標準差: {np.std(returns):.4f}%")
+        print(f"  最高年報酬率: {np.max(returns):.4f}%")
+        print(f"  最低年報酬率: {np.min(returns):.4f}%")
+        print(f"  正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}")
+        
+        best_year_idx = np.argmax(returns_top10)
         best_result = self.results[best_year_idx]
         best_dt_params = best_result['best_params']['dt_params']
         
         print(f"\n最佳表現年份: {best_result['test_year']}")
-        print(f"  報酬率: {best_result['best_return']:.4f}%")
+        print(f"  前10支股票報酬率: {best_result['best_return_top10']:.4f}%")
+        print(f"  所有選中股票報酬率: {best_result['best_return']:.4f}%")
         print(f"  分割準則: {best_dt_params['criterion']}")
         print(f"  最大深度: {best_dt_params['max_depth']}")
         print(f"  特徵數量: {best_result['best_params']['num_features']}")
         print(f"  選中股票數: {best_result['num_selected_stocks']}")
 
-# 主程式執行
 def main():
-    # 初始化模型（指定輸出資料夾為Q2output）
     selector = StockDecisionTreeSelector('top200.xlsx', output_dir='Q2output')
     
-    # 執行分析
     print("開始執行決策樹股票選股分析...")
     selector.run_rolling_window_analysis()
     
-    # 儲存結果
-    results_df = selector.save_results_to_csv()
-    
-    # 創建視覺化
+    selector.save_results_to_csv()
     selector.create_visualizations()
-    
-    # 創建績效比較圖表
+    selector.create_top10_analysis_chart()
     selector.create_performance_comparison_chart()
-    
-    # 儲存分析報告
     selector.save_analysis_report()
-    
-    # 印出摘要
     selector.print_summary()
     
     print(f"\n所有結果已儲存至 Q2output 資料夾")
     
-    return selector, results_df
+    return selector
 
 if __name__ == "__main__":
-    selector, results_df = main()
+    selector = main()

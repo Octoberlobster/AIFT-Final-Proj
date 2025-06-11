@@ -213,8 +213,10 @@ class Paper2StockSelector:
         X_test_scaled = scaler.transform(X_test)
         
         best_return = -np.inf
+        best_return_top10 = -np.inf
         best_config = {}
         best_selected_stocks = None
+        best_top10_stocks = None
         best_model = None
         
         models = self.get_model_configurations()
@@ -242,14 +244,25 @@ class Paper2StockSelector:
                     y_pred = grid_search.predict(X_test_fs)
                     y_pred_proba = grid_search.predict_proba(X_test_fs)[:, 1]
                     
-                    # 選擇預測為1（高於平均）的股票
+                    # 根據預測概率排序，選擇前10支股票
+                    test_data_with_proba = test_data.copy()
+                    test_data_with_proba['prediction_proba'] = y_pred_proba
+                    test_data_sorted = test_data_with_proba.sort_values('prediction_proba', ascending=False)
+                    
+                    # 選擇前10支股票
+                    top10_stocks = test_data_sorted.head(10)
+                    avg_return_top10 = top10_stocks['Return'].mean()
+                    
+                    # 原本的選股方法（選擇預測為1的股票）
                     selected_indices = np.where(y_pred == 1)[0]
                     
                     if len(selected_indices) > 0:
                         selected_stocks = test_data.iloc[selected_indices]
                         avg_return = selected_stocks['Return'].mean()
                         
-                        if avg_return > best_return:
+                        # 以前10支股票的報酬率作為主要評估標準
+                        if avg_return_top10 > best_return_top10:
+                            best_return_top10 = avg_return_top10
                             best_return = avg_return
                             best_config = {
                                 'model_name': model_name,
@@ -260,6 +273,23 @@ class Paper2StockSelector:
                                 'feature_mask': feature_mask
                             }
                             best_selected_stocks = selected_stocks
+                            best_top10_stocks = top10_stocks
+                            best_model = grid_search.best_estimator_
+                    else:
+                        # 如果沒有預測為1的股票，仍然記錄前10支股票
+                        if avg_return_top10 > best_return_top10:
+                            best_return_top10 = avg_return_top10
+                            best_return = 0
+                            best_config = {
+                                'model_name': model_name,
+                                'selection_method': selection_method,
+                                'best_params': grid_search.best_params_,
+                                'num_features': X_train_fs.shape[1],
+                                'accuracy': grid_search.best_score_,
+                                'feature_mask': feature_mask
+                            }
+                            best_selected_stocks = None
+                            best_top10_stocks = top10_stocks
                             best_model = grid_search.best_estimator_
                             
                 except Exception as e:
@@ -269,9 +299,11 @@ class Paper2StockSelector:
             'train_year': train_year,
             'test_year': test_year,
             'best_return': best_return,
+            'best_return_top10': best_return_top10,
             'best_config': best_config,
             'num_selected_stocks': len(best_selected_stocks) if best_selected_stocks is not None else 0,
             'selected_stocks': best_selected_stocks,
+            'top10_stocks': best_top10_stocks,
             'best_model': best_model
         }
     
@@ -292,9 +324,10 @@ class Paper2StockSelector:
             
             result = self.train_and_evaluate(train_year, test_year)
             
-            if result and result['best_return'] != -np.inf:
+            if result and result['best_return_top10'] != -np.inf:
                 self.results.append(result)
-                print(f"最佳平均報酬率: {result['best_return']:.4f}%")
+                print(f"前10支股票平均報酬率: {result['best_return_top10']:.4f}%")
+                print(f"所有選中股票平均報酬率: {result['best_return']:.4f}%")
                 print(f"最佳模型: {result['best_config']['model_name']}")
                 print(f"特徵選擇方法: {result['best_config']['selection_method']}")
                 print(f"模型準確率: {result['best_config']['accuracy']:.4f}")
@@ -311,13 +344,15 @@ class Paper2StockSelector:
         
         results_data = []
         selected_stocks_data = []
+        top10_stocks_data = []
         
         for result in self.results:
             config = result['best_config']
             results_data.append({
                 '訓練年份': result['train_year'],
                 '測試年份': result['test_year'],
-                '最佳平均報酬率(%)': result['best_return'],
+                '前10支股票平均報酬率(%)': result['best_return_top10'],
+                '所有選中股票平均報酬率(%)': result['best_return'],
                 '最佳模型': config['model_name'],
                 '特徵選擇方法': config['selection_method'],
                 '模型準確率': config['accuracy'],
@@ -326,26 +361,47 @@ class Paper2StockSelector:
                 '最佳參數': str(config['best_params'])
             })
             
+            # 儲存所有選中股票詳細資訊
             if result['selected_stocks'] is not None:
                 stocks = result['selected_stocks'].copy()
                 stocks['訓練年份'] = result['train_year']
                 stocks['測試年份'] = result['test_year']
                 stocks['使用模型'] = config['model_name']
                 stocks['特徵選擇方法'] = config['selection_method']
+                stocks['選股類型'] = '預測為高於平均'
                 selected_stocks_data.append(stocks)
+            
+            # 儲存前10支股票詳細資訊
+            if result['top10_stocks'] is not None:
+                top10_stocks = result['top10_stocks'].copy()
+                top10_stocks['訓練年份'] = result['train_year']
+                top10_stocks['測試年份'] = result['test_year']
+                top10_stocks['使用模型'] = config['model_name']
+                top10_stocks['特徵選擇方法'] = config['selection_method']
+                top10_stocks['排名'] = range(1, len(top10_stocks) + 1)
+                top10_stocks_data.append(top10_stocks)
         
+        # 儲存主要結果
         results_df = pd.DataFrame(results_data)
         results_path = os.path.join(self.output_dir, 'paper2_stock_selection_results.csv')
         results_df.to_csv(results_path, index=False, encoding='utf-8-sig')
         
+        # 儲存所有選中股票詳細資訊
         if selected_stocks_data:
             all_selected_stocks = pd.concat(selected_stocks_data, ignore_index=True)
             stocks_path = os.path.join(self.output_dir, 'paper2_selected_stocks_details.csv')
             all_selected_stocks.to_csv(stocks_path, index=False, encoding='utf-8-sig')
         
+        # 儲存前10支股票詳細資訊
+        if top10_stocks_data:
+            all_top10_stocks = pd.concat(top10_stocks_data, ignore_index=True)
+            top10_path = os.path.join(self.output_dir, 'paper2_top10_stocks_details.csv')
+            all_top10_stocks.to_csv(top10_path, index=False, encoding='utf-8-sig')
+        
         print(f"結果已儲存到 {self.output_dir} 資料夾:")
         print(f"- paper2_stock_selection_results.csv (主要結果)")
-        print(f"- paper2_selected_stocks_details.csv (選中股票詳細資訊)")
+        print(f"- paper2_selected_stocks_details.csv (所有選中股票詳細資訊)")
+        print(f"- paper2_top10_stocks_details.csv (前10支股票詳細資訊)")
         
         return results_df
     
@@ -359,6 +415,7 @@ class Paper2StockSelector:
         
         years = [r['test_year'] for r in self.results]
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         models = [r['best_config']['model_name'] for r in self.results]
         selection_methods = [r['best_config']['selection_method'] for r in self.results]
         num_features = [r['best_config']['num_features'] for r in self.results]
@@ -367,13 +424,15 @@ class Paper2StockSelector:
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
         fig.suptitle('Paper 2 進階股票選股模型分析結果', fontsize=16, fontweight='bold')
         
-        # 1. 年度報酬率趨勢
-        axes[0, 0].plot(years, returns, marker='o', linewidth=2, markersize=8, color='green')
-        axes[0, 0].set_title('年度最佳平均報酬率趨勢')
+        # 1. 年度報酬率趨勢比較（前10 vs 所有選中）
+        axes[0, 0].plot(years, returns_top10, marker='o', linewidth=2, markersize=8, color='green', label='前10支股票')
+        axes[0, 0].plot(years, returns, marker='s', linewidth=2, markersize=6, color='blue', label='所有選中股票')
+        axes[0, 0].set_title('年度最佳平均報酬率趨勢比較')
         axes[0, 0].set_xlabel('年份')
         axes[0, 0].set_ylabel('平均報酬率 (%)')
         axes[0, 0].grid(True, alpha=0.3)
         axes[0, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        axes[0, 0].legend()
         
         # 2. 最佳模型分布
         model_counts = pd.Series(models).value_counts()
@@ -393,33 +452,187 @@ class Paper2StockSelector:
         axes[0, 2].tick_params(axis='x', rotation=45)
         axes[0, 2].grid(True, alpha=0.3)
         
-        # 4. 特徵數量 vs 報酬率
-        scatter = axes[1, 0].scatter(num_features, returns, c=years, cmap='viridis', s=100, alpha=0.7)
-        axes[1, 0].set_title('特徵數量 vs 平均報酬率')
+        # 4. 特徵數量 vs 前10支股票報酬率
+        scatter = axes[1, 0].scatter(num_features, returns_top10, c=years, cmap='viridis', s=100, alpha=0.7)
+        axes[1, 0].set_title('特徵數量 vs 前10支股票平均報酬率')
         axes[1, 0].set_xlabel('特徵數量')
         axes[1, 0].set_ylabel('平均報酬率 (%)')
         axes[1, 0].grid(True, alpha=0.3)
         plt.colorbar(scatter, ax=axes[1, 0], label='年份')
         
-        # 5. 模型準確率 vs 報酬率
-        axes[1, 1].scatter(accuracies, returns, alpha=0.7, color='red', s=100)
-        axes[1, 1].set_title('模型準確率 vs 平均報酬率')
+        # 5. 模型準確率 vs 前10支股票報酬率
+        axes[1, 1].scatter(accuracies, returns_top10, alpha=0.7, color='red', s=100)
+        axes[1, 1].set_title('模型準確率 vs 前10支股票平均報酬率')
         axes[1, 1].set_xlabel('模型準確率')
         axes[1, 1].set_ylabel('平均報酬率 (%)')
         axes[1, 1].grid(True, alpha=0.3)
         
-        # 6. 累積報酬率
+        # 6. 累積報酬率比較
         cumulative_returns = np.cumsum(returns)
-        axes[1, 2].plot(years, cumulative_returns, marker='o', linewidth=2, markersize=6, color='blue')
-        axes[1, 2].fill_between(years, cumulative_returns, alpha=0.3, color='blue')
-        axes[1, 2].set_title('累積報酬率趨勢')
+        cumulative_returns_top10 = np.cumsum(returns_top10)
+        axes[1, 2].plot(years, cumulative_returns_top10, marker='o', linewidth=2, markersize=6, color='green', label='前10支股票')
+        axes[1, 2].plot(years, cumulative_returns, marker='s', linewidth=2, markersize=6, color='blue', label='所有選中股票')
+        axes[1, 2].fill_between(years, cumulative_returns_top10, alpha=0.3, color='green')
+        axes[1, 2].set_title('累積報酬率趨勢比較')
         axes[1, 2].set_xlabel('年份')
         axes[1, 2].set_ylabel('累積報酬率 (%)')
         axes[1, 2].grid(True, alpha=0.3)
+        axes[1, 2].legend()
         
         plt.tight_layout()
         chart_path = os.path.join(self.output_dir, 'paper2_analysis_results.png')
         plt.savefig(chart_path, dpi=300, bbox_inches='tight')
+        plt.show()
+    
+    def create_top10_individual_returns_chart(self):
+        """創建前10支股票各自的年化報酬折線圖"""
+        if not self.results:
+            return
+        
+        setup_chinese_font()
+        
+        # 收集前10支股票的個別報酬率資料
+        stock_returns = {}
+        years = []
+        
+        for result in self.results:
+            if result['top10_stocks'] is not None:
+                year = result['test_year']
+                years.append(year)
+                stocks = result['top10_stocks']
+                
+                for idx, (_, stock) in enumerate(stocks.iterrows()):
+                    stock_name = f"第{idx+1}名股票"
+                    if stock_name not in stock_returns:
+                        stock_returns[stock_name] = []
+                    stock_returns[stock_name].append(stock['Return'])
+        
+        if not stock_returns:
+            return
+        
+        # 創建折線圖
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
+        fig.suptitle('前10支股票各自年化報酬率趨勢', fontsize=16, fontweight='bold')
+        
+        # 上圖：所有10支股票的折線圖
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        for i, (stock_name, returns) in enumerate(stock_returns.items()):
+            if len(returns) == len(years):  # 確保資料完整
+                ax1.plot(years, returns, marker='o', linewidth=2, markersize=4, 
+                        color=colors[i], label=stock_name, alpha=0.8)
+        
+        ax1.set_title('前10支股票個別年化報酬率')
+        ax1.set_xlabel('年份')
+        ax1.set_ylabel('年化報酬率 (%)')
+        ax1.grid(True, alpha=0.3)
+        ax1.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        # 下圖：平均報酬率和標準差
+        if len(years) > 0:
+            avg_returns = []
+            std_returns = []
+            
+            for year_idx in range(len(years)):
+                year_returns = [stock_returns[stock][year_idx] for stock in stock_returns 
+                              if len(stock_returns[stock]) > year_idx]
+                if year_returns:
+                    avg_returns.append(np.mean(year_returns))
+                    std_returns.append(np.std(year_returns))
+                else:
+                    avg_returns.append(0)
+                    std_returns.append(0)
+            
+            ax2.plot(years, avg_returns, marker='o', linewidth=3, markersize=8, 
+                    color='red', label='平均報酬率')
+            ax2.fill_between(years, 
+                           np.array(avg_returns) - np.array(std_returns),
+                           np.array(avg_returns) + np.array(std_returns),
+                           alpha=0.3, color='red', label='±1標準差')
+        
+        ax2.set_title('前10支股票平均報酬率與變異性')
+        ax2.set_xlabel('年份')
+        ax2.set_ylabel('年化報酬率 (%)')
+        ax2.grid(True, alpha=0.3)
+        ax2.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        ax2.legend()
+        
+        plt.tight_layout()
+        individual_chart_path = os.path.join(self.output_dir, 'paper2_top10_individual_returns.png')
+        plt.savefig(individual_chart_path, dpi=300, bbox_inches='tight')
+        plt.show()
+    
+    def create_top10_analysis_chart(self):
+        """創建前10支股票專門分析圖表"""
+        if not self.results:
+            return
+        
+        setup_chinese_font()
+        
+        years = [r['test_year'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
+        
+        # 分析前10支股票的個別表現
+        yearly_top10_returns = {}
+        for result in self.results:
+            if result['top10_stocks'] is not None:
+                year = result['test_year']
+                stocks = result['top10_stocks']
+                yearly_top10_returns[year] = stocks['Return'].tolist()
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle('前10支股票詳細分析', fontsize=16, fontweight='bold')
+        
+        # 1. 前10支股票報酬率箱型圖
+        if yearly_top10_returns:
+            box_data = []
+            box_labels = []
+            for year in sorted(yearly_top10_returns.keys()):
+                box_data.append(yearly_top10_returns[year])
+                box_labels.append(str(year))
+            
+            axes[0, 0].boxplot(box_data, labels=box_labels)
+            axes[0, 0].set_title('前10支股票個別報酬率分布')
+            axes[0, 0].set_xlabel('年份')
+            axes[0, 0].set_ylabel('個別股票報酬率 (%)')
+            axes[0, 0].grid(True, alpha=0.3)
+            axes[0, 0].tick_params(axis='x', rotation=45)
+        
+        # 2. 前10支股票勝率統計
+        positive_years = sum(1 for r in returns_top10 if r > 0)
+        total_years = len(returns_top10)
+        win_rate = positive_years / total_years * 100
+        
+        axes[0, 1].pie([positive_years, total_years - positive_years], 
+                      labels=[f'正報酬\n({positive_years}年)', f'負報酬\n({total_years - positive_years}年)'],
+                      colors=['green', 'red'], autopct='%1.1f%%', startangle=90)
+        axes[0, 1].set_title(f'前10支股票勝率統計\n總勝率: {win_rate:.1f}%')
+        
+        # 3. 前10支股票年度報酬率趨勢
+        axes[1, 0].plot(years, returns_top10, marker='o', linewidth=2, markersize=8, color='green')
+        axes[1, 0].set_title('前10支股票年度平均報酬率趨勢')
+        axes[1, 0].set_xlabel('年份')
+        axes[1, 0].set_ylabel('平均報酬率 (%)')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        
+        # 4. 前10支股票統計摘要
+        mean_return = np.mean(returns_top10)
+        std_return = np.std(returns_top10)
+        max_return = np.max(returns_top10)
+        min_return = np.min(returns_top10)
+        
+        stats_text = f'統計摘要:\n平均報酬率: {mean_return:.2f}%\n標準差: {std_return:.2f}%\n最高報酬率: {max_return:.2f}%\n最低報酬率: {min_return:.2f}%\n夏普比率: {mean_return/std_return:.3f}'
+        
+        axes[1, 1].text(0.1, 0.5, stats_text, transform=axes[1, 1].transAxes, 
+                        fontsize=12, verticalalignment='center',
+                        bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        axes[1, 1].set_title('前10支股票績效統計')
+        axes[1, 1].axis('off')
+        
+        plt.tight_layout()
+        top10_chart_path = os.path.join(self.output_dir, 'paper2_top10_analysis.png')
+        plt.savefig(top10_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
     
     def create_model_comparison_chart(self):
@@ -436,7 +649,7 @@ class Paper2StockSelector:
         for result in self.results:
             model_name = result['best_config']['model_name']
             selection_method = result['best_config']['selection_method']
-            return_rate = result['best_return']
+            return_rate = result['best_return_top10']  # 使用前10支股票的報酬率
             
             if model_name not in model_performance:
                 model_performance[model_name] = []
@@ -454,7 +667,7 @@ class Paper2StockSelector:
         model_stds = [np.std(model_performance[model]) for model in models]
         
         ax1.bar(models, model_means, yerr=model_stds, alpha=0.7, capsize=5)
-        ax1.set_title('不同模型平均報酬率比較')
+        ax1.set_title('不同模型前10支股票平均報酬率比較')
         ax1.set_xlabel('模型類型')
         ax1.set_ylabel('平均報酬率 (%)')
         ax1.tick_params(axis='x', rotation=45)
@@ -466,7 +679,7 @@ class Paper2StockSelector:
         selection_stds = [np.std(selection_performance[sel]) for sel in selections]
         
         ax2.bar(selections, selection_means, yerr=selection_stds, alpha=0.7, capsize=5, color='orange')
-        ax2.set_title('不同特徵選擇方法平均報酬率比較')
+        ax2.set_title('不同特徵選擇方法前10支股票平均報酬率比較')
         ax2.set_xlabel('特徵選擇方法')
         ax2.set_ylabel('平均報酬率 (%)')
         ax2.tick_params(axis='x', rotation=45)
@@ -483,6 +696,7 @@ class Paper2StockSelector:
             return
         
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         models = [r['best_config']['model_name'] for r in self.results]
         selections = [r['best_config']['selection_method'] for r in self.results]
         
@@ -499,7 +713,15 @@ Paper 2 進階股票選股模型分析報告
 - 使用演算法: 機器學習多模型方法（類似Paper 2）
 - 特徵選擇方法: F-test, 互信息, 隨機森林重要性
 
-績效統計:
+前10支股票績效統計:
+- 平均年報酬率: {np.mean(returns_top10):.4f}%
+- 報酬率標準差: {np.std(returns_top10):.4f}%
+- 最高年報酬率: {np.max(returns_top10):.4f}%
+- 最低年報酬率: {np.min(returns_top10):.4f}%
+- 正報酬年數: {sum(1 for r in returns_top10 if r > 0)}/{len(returns_top10)}
+- 勝率: {sum(1 for r in returns_top10 if r > 0)/len(returns_top10)*100:.2f}%
+
+所有選中股票績效統計:
 - 平均年報酬率: {np.mean(returns):.4f}%
 - 報酬率標準差: {np.std(returns):.4f}%
 - 最高年報酬率: {np.max(returns):.4f}%
@@ -522,7 +744,8 @@ Paper 2 進階股票選股模型分析報告
             config = result['best_config']
             report += f"""
 {result['test_year']}年:
-  - 報酬率: {result['best_return']:.4f}%
+  - 前10支股票報酬率: {result['best_return_top10']:.4f}%
+  - 所有選中股票報酬率: {result['best_return']:.4f}%
   - 最佳模型: {config['model_name']}
   - 特徵選擇: {config['selection_method']}
   - 模型準確率: {config['accuracy']:.4f}
@@ -531,14 +754,15 @@ Paper 2 進階股票選股模型分析報告
   - 最佳參數: {config['best_params']}
 """
         
-        best_year_idx = np.argmax(returns)
+        best_year_idx = np.argmax(returns_top10)
         best_result = self.results[best_year_idx]
         best_config = best_result['best_config']
         
         report += f"""
 
-最佳表現年份: {best_result['test_year']}
-  - 報酬率: {best_result['best_return']:.4f}%
+最佳表現年份（前10支股票）: {best_result['test_year']}
+  - 前10支股票報酬率: {best_result['best_return_top10']:.4f}%
+  - 所有選中股票報酬率: {best_result['best_return']:.4f}%
   - 使用模型: {best_config['model_name']}
   - 特徵選擇: {best_config['selection_method']}
   - 模型準確率: {best_config['accuracy']:.4f}
@@ -546,8 +770,10 @@ Paper 2 進階股票選股模型分析報告
   - 選中股票數: {best_result['num_selected_stocks']}
 
 風險指標:
-- 夏普比率: {np.mean(returns)/np.std(returns):.4f} (假設無風險利率為0)
-- 最大回撤: {self.calculate_max_drawdown(returns):.4f}%
+- 前10支股票夏普比率: {np.mean(returns_top10)/np.std(returns_top10):.4f} (假設無風險利率為0)
+- 所有選中股票夏普比率: {np.mean(returns)/np.std(returns):.4f} (假設無風險利率為0)
+- 前10支股票最大回撤: {self.calculate_max_drawdown(returns_top10):.4f}%
+- 所有選中股票最大回撤: {self.calculate_max_drawdown(returns):.4f}%
 
 Paper 2 方法優勢:
 - 結合多種機器學習模型，提高預測穩健性
@@ -555,6 +781,7 @@ Paper 2 方法優勢:
 - 基於異常值檢測的特徵工程，捕捉市場異常信號
 - 自動化參數優化，減少人為偏差
 - 可解釋性較強的特徵重要性分析
+- 基於預測概率的前10支股票選擇，提供精準的投資組合
 """
         
         report_path = os.path.join(self.output_dir, 'paper2_analysis_report.txt')
@@ -577,24 +804,35 @@ Paper 2 方法優勢:
             return
         
         returns = [r['best_return'] for r in self.results]
+        returns_top10 = [r['best_return_top10'] for r in self.results]
         
         print("\n" + "="*50)
         print("Paper 2 進階股票選股模型分析摘要")
         print("="*50)
         print(f"分析期間: {self.results[0]['train_year']}-{self.results[-1]['test_year']}")
         print(f"總測試年數: {len(self.results)}")
-        print(f"平均年報酬率: {np.mean(returns):.4f}%")
-        print(f"報酬率標準差: {np.std(returns):.4f}%")
-        print(f"最高年報酬率: {np.max(returns):.4f}%")
-        print(f"最低年報酬率: {np.min(returns):.4f}%")
-        print(f"正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}")
         
-        best_year_idx = np.argmax(returns)
+        print(f"\n前10支股票表現:")
+        print(f"  平均年報酬率: {np.mean(returns_top10):.4f}%")
+        print(f"  報酬率標準差: {np.std(returns_top10):.4f}%")
+        print(f"  最高年報酬率: {np.max(returns_top10):.4f}%")
+        print(f"  最低年報酬率: {np.min(returns_top10):.4f}%")
+        print(f"  正報酬年數: {sum(1 for r in returns_top10 if r > 0)}/{len(returns_top10)}")
+        
+        print(f"\n所有選中股票表現:")
+        print(f"  平均年報酬率: {np.mean(returns):.4f}%")
+        print(f"  報酬率標準差: {np.std(returns):.4f}%")
+        print(f"  最高年報酬率: {np.max(returns):.4f}%")
+        print(f"  最低年報酬率: {np.min(returns):.4f}%")
+        print(f"  正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}")
+        
+        best_year_idx = np.argmax(returns_top10)
         best_result = self.results[best_year_idx]
         best_config = best_result['best_config']
         
         print(f"\n最佳表現年份: {best_result['test_year']}")
-        print(f"  報酬率: {best_result['best_return']:.4f}%")
+        print(f"  前10支股票報酬率: {best_result['best_return_top10']:.4f}%")
+        print(f"  所有選中股票報酬率: {best_result['best_return']:.4f}%")
         print(f"  使用模型: {best_config['model_name']}")
         print(f"  特徵選擇: {best_config['selection_method']}")
         print(f"  模型準確率: {best_config['accuracy']:.4f}")
@@ -609,6 +847,8 @@ def main():
     
     selector.save_results_to_csv()
     selector.create_visualizations()
+    selector.create_top10_individual_returns_chart()
+    selector.create_top10_analysis_chart()
     selector.create_model_comparison_chart()
     selector.save_analysis_report()
     selector.print_summary()
