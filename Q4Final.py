@@ -40,6 +40,7 @@ class Paper3StockSelector:
             'M應收帳款週轉次', 'M營業利益成長率', 'M稅後淨利成長率'
         ]
         self.results = []
+        self.backtest_results = []  # 新增：儲存回測結果
         
         # GA參數設定
         self.population_size = 50
@@ -377,7 +378,371 @@ class Paper3StockSelector:
                 print(f"適應度: {result['fitness']:.4f}")
             else:
                 print("未找到有效結果")
-    
+
+    def calculate_backtest_metrics(self):
+        """計算TradingView風格的回測指標"""
+        if not self.results:
+            return None
+        
+        returns_top10 = [r['best_return'] for r in self.results]
+        returns_top30 = [r['best_return_30'] for r in self.results]
+        years = [r['test_year'] for r in self.results]
+        
+        # 計算累積淨值
+        initial_capital = 100000  # 初始資金10萬
+        cumulative_top10 = [initial_capital]
+        cumulative_top30 = [initial_capital]
+        
+        for i, (ret_10, ret_30) in enumerate(zip(returns_top10, returns_top30)):
+            cumulative_top10.append(cumulative_top10[-1] * (1 + ret_10/100))
+            cumulative_top30.append(cumulative_top30[-1] * (1 + ret_30/100))
+        
+        # 計算回測指標
+        def calculate_metrics(returns, cumulative):
+            total_return = (cumulative[-1] - cumulative[0]) / cumulative[0] * 100
+            annual_return = (cumulative[-1] / cumulative[0]) ** (1/len(returns)) - 1
+            volatility = np.std(returns)
+            sharpe_ratio = np.mean(returns) / volatility if volatility > 0 else 0
+            
+            # 計算最大回撤
+            peak = cumulative[0]
+            max_drawdown = 0
+            for value in cumulative[1:]:
+                if value > peak:
+                    peak = value
+                drawdown = (peak - value) / peak
+                max_drawdown = max(max_drawdown, drawdown)
+            
+            # 勝率
+            win_rate = sum(1 for r in returns if r > 0) / len(returns) * 100
+            
+            # 盈利因子
+            profits = [r for r in returns if r > 0]
+            losses = [abs(r) for r in returns if r < 0]
+            profit_factor = sum(profits) / sum(losses) if losses else float('inf')
+            
+            return {
+                'total_return': total_return,
+                'annual_return': annual_return * 100,
+                'volatility': volatility,
+                'sharpe_ratio': sharpe_ratio,
+                'max_drawdown': max_drawdown * 100,
+                'win_rate': win_rate,
+                'profit_factor': profit_factor,
+                'total_trades': len(returns),
+                'winning_trades': len(profits),
+                'losing_trades': len(losses)
+            }
+        
+        metrics_top10 = calculate_metrics(returns_top10, cumulative_top10)
+        metrics_top30 = calculate_metrics(returns_top30, cumulative_top30)
+        
+        self.backtest_results = {
+            'years': years,
+            'returns_top10': returns_top10,
+            'returns_top30': returns_top30,
+            'cumulative_top10': cumulative_top10[1:],
+            'cumulative_top30': cumulative_top30[1:],
+            'metrics_top10': metrics_top10,
+            'metrics_top30': metrics_top30,
+            'initial_capital': initial_capital
+        }
+        
+        return self.backtest_results
+
+    def create_tradingview_style_backtest_chart(self):
+        """創建TradingView風格的回測圖表（獨立圖表）"""
+        if not self.backtest_results:
+            self.calculate_backtest_metrics()
+        
+        setup_chinese_font()
+        
+        # 創建獨立的TradingView風格回測圖表
+        fig = plt.figure(figsize=(20, 16))
+        gs = fig.add_gridspec(4, 3, height_ratios=[3, 1, 1, 1], width_ratios=[2, 1, 1])
+        
+        # 主圖：淨值曲線
+        ax_main = fig.add_subplot(gs[0, :])
+        years = self.backtest_results['years']
+        cumulative_top10 = self.backtest_results['cumulative_top10']
+        cumulative_top30 = self.backtest_results['cumulative_top30']
+        
+        ax_main.plot(years, cumulative_top10, linewidth=3, color='#2E8B57', label='前10支股票策略', marker='o', markersize=6)
+        ax_main.plot(years, cumulative_top30, linewidth=2, color='#4169E1', label='前30支股票策略', marker='s', markersize=4)
+        ax_main.axhline(y=self.backtest_results['initial_capital'], color='gray', linestyle='--', alpha=0.5, label='初始資金')
+        
+        ax_main.set_title('Paper 3 GA-SVR股票選股策略回測 - 淨值曲線', fontsize=18, fontweight='bold', pad=20)
+        ax_main.set_xlabel('年份', fontsize=12)
+        ax_main.set_ylabel('淨值 (元)', fontsize=12)
+        ax_main.legend(fontsize=12)
+        ax_main.grid(True, alpha=0.3)
+        ax_main.set_facecolor('#f8f9fa')
+        
+        # 格式化Y軸
+        ax_main.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:,.0f}'))
+        
+        # 子圖1：年度報酬率
+        ax_returns = fig.add_subplot(gs[1, :])
+        returns_top10 = self.backtest_results['returns_top10']
+        returns_top30 = self.backtest_results['returns_top30']
+        
+        x = np.arange(len(years))
+        width = 0.35
+        
+        colors_top10 = ['#2E8B57' if r > 0 else '#DC143C' for r in returns_top10]
+        colors_top30 = ['#4169E1' if r > 0 else '#FF6347' for r in returns_top30]
+        
+        ax_returns.bar(x - width/2, returns_top10, width, label='前10支股票', color=colors_top10, alpha=0.8)
+        ax_returns.bar(x + width/2, returns_top30, width, label='前30支股票', color=colors_top30, alpha=0.8)
+        
+        ax_returns.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        ax_returns.set_title('年度報酬率分布', fontsize=14, fontweight='bold')
+        ax_returns.set_xlabel('年份')
+        ax_returns.set_ylabel('報酬率 (%)')
+        ax_returns.set_xticks(x)
+        ax_returns.set_xticklabels(years)
+        ax_returns.legend()
+        ax_returns.grid(True, alpha=0.3)
+        
+        # 子圖2：績效指標表格 - 前10支股票
+        ax_metrics1 = fig.add_subplot(gs[2, 0])
+        ax_metrics1.axis('off')
+        
+        metrics_top10 = self.backtest_results['metrics_top10']
+        metrics_data1 = [
+            ['總報酬率', f"{metrics_top10['total_return']:.2f}%"],
+            ['年化報酬率', f"{metrics_top10['annual_return']:.2f}%"],
+            ['波動率', f"{metrics_top10['volatility']:.2f}%"],
+            ['夏普比率', f"{metrics_top10['sharpe_ratio']:.3f}"],
+            ['最大回撤', f"{metrics_top10['max_drawdown']:.2f}%"],
+            ['勝率', f"{metrics_top10['win_rate']:.1f}%"],
+            ['盈利因子', f"{metrics_top10['profit_factor']:.2f}"],
+            ['總交易次數', f"{metrics_top10['total_trades']}"]
+        ]
+        
+        table1 = ax_metrics1.table(cellText=metrics_data1,
+                                  colLabels=['指標', '前10支股票策略'],
+                                  cellLoc='center',
+                                  loc='center',
+                                  colWidths=[0.5, 0.5])
+        table1.auto_set_font_size(False)
+        table1.set_fontsize(10)
+        table1.scale(1, 2)
+        
+        # 設置表格樣式
+        for i in range(len(metrics_data1) + 1):
+            for j in range(2):
+                cell = table1[(i, j)]
+                if i == 0:  # 標題行
+                    cell.set_facecolor('#2E8B57')
+                    cell.set_text_props(weight='bold', color='white')
+                else:
+                    cell.set_facecolor('#f0f0f0' if i % 2 == 0 else 'white')
+        
+        ax_metrics1.set_title('前10支股票策略績效', fontsize=12, fontweight='bold')
+        
+        # 子圖3：績效指標表格 - 前30支股票
+        ax_metrics2 = fig.add_subplot(gs[2, 1])
+        ax_metrics2.axis('off')
+        
+        metrics_top30 = self.backtest_results['metrics_top30']
+        metrics_data2 = [
+            ['總報酬率', f"{metrics_top30['total_return']:.2f}%"],
+            ['年化報酬率', f"{metrics_top30['annual_return']:.2f}%"],
+            ['波動率', f"{metrics_top30['volatility']:.2f}%"],
+            ['夏普比率', f"{metrics_top30['sharpe_ratio']:.3f}"],
+            ['最大回撤', f"{metrics_top30['max_drawdown']:.2f}%"],
+            ['勝率', f"{metrics_top30['win_rate']:.1f}%"],
+            ['盈利因子', f"{metrics_top30['profit_factor']:.2f}"],
+            ['總交易次數', f"{metrics_top30['total_trades']}"]
+        ]
+        
+        table2 = ax_metrics2.table(cellText=metrics_data2,
+                                  colLabels=['指標', '前30支股票策略'],
+                                  cellLoc='center',
+                                  loc='center',
+                                  colWidths=[0.5, 0.5])
+        table2.auto_set_font_size(False)
+        table2.set_fontsize(10)
+        table2.scale(1, 2)
+        
+        # 設置表格樣式
+        for i in range(len(metrics_data2) + 1):
+            for j in range(2):
+                cell = table2[(i, j)]
+                if i == 0:  # 標題行
+                    cell.set_facecolor('#4169E1')
+                    cell.set_text_props(weight='bold', color='white')
+                else:
+                    cell.set_facecolor('#f0f0f0' if i % 2 == 0 else 'white')
+        
+        ax_metrics2.set_title('前30支股票策略績效', fontsize=12, fontweight='bold')
+        
+        # 子圖4：策略比較
+        ax_comparison = fig.add_subplot(gs[2, 2])
+        ax_comparison.axis('off')
+        
+        comparison_data = [
+            ['策略', '前10支股票', '前30支股票'],
+            ['總報酬率', f"{metrics_top10['total_return']:.2f}%", f"{metrics_top30['total_return']:.2f}%"],
+            ['夏普比率', f"{metrics_top10['sharpe_ratio']:.3f}", f"{metrics_top30['sharpe_ratio']:.3f}"],
+            ['最大回撤', f"{metrics_top10['max_drawdown']:.2f}%", f"{metrics_top30['max_drawdown']:.2f}%"],
+            ['勝率', f"{metrics_top10['win_rate']:.1f}%", f"{metrics_top30['win_rate']:.1f}%"]
+        ]
+        
+        table3 = ax_comparison.table(cellText=comparison_data[1:],
+                                   colLabels=comparison_data[0],
+                                   cellLoc='center',
+                                   loc='center',
+                                   colWidths=[0.4, 0.3, 0.3])
+        table3.auto_set_font_size(False)
+        table3.set_fontsize(9)
+        table3.scale(1, 2)
+        
+        # 設置表格樣式
+        for i in range(len(comparison_data)):
+            for j in range(3):
+                cell = table3[(i, j)]
+                if i == 0:  # 標題行
+                    cell.set_facecolor('#696969')
+                    cell.set_text_props(weight='bold', color='white')
+                else:
+                    cell.set_facecolor('#f0f0f0' if i % 2 == 0 else 'white')
+        
+        ax_comparison.set_title('策略績效比較', fontsize=12, fontweight='bold')
+        
+        # 子圖5：回撤分析
+        ax_drawdown = fig.add_subplot(gs[3, :])
+        
+        # 計算回撤序列
+        def calculate_drawdown_series(cumulative):
+            peak = cumulative[0]
+            drawdowns = []
+            for value in cumulative:
+                if value > peak:
+                    peak = value
+                drawdown = (peak - value) / peak * 100
+                drawdowns.append(drawdown)
+            return drawdowns
+        
+        drawdowns_top10 = calculate_drawdown_series(cumulative_top10)
+        drawdowns_top30 = calculate_drawdown_series(cumulative_top30)
+        
+        ax_drawdown.fill_between(years, drawdowns_top10, 0, alpha=0.6, color='#2E8B57', label='前10支股票策略')
+        ax_drawdown.fill_between(years, drawdowns_top30, 0, alpha=0.4, color='#4169E1', label='前30支股票策略')
+        
+        ax_drawdown.set_title('回撤分析', fontsize=14, fontweight='bold')
+        ax_drawdown.set_xlabel('年份')
+        ax_drawdown.set_ylabel('回撤 (%)')
+        ax_drawdown.legend()
+        ax_drawdown.grid(True, alpha=0.3)
+        ax_drawdown.invert_yaxis()  # 回撤向下顯示
+        
+        plt.tight_layout()
+        
+        # 儲存圖表
+        backtest_chart_path = os.path.join(self.output_dir, 'tradingview_style_backtest.png')
+        plt.savefig(backtest_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.show()
+        
+        print(f"TradingView風格回測圖表已儲存至: {backtest_chart_path}")
+
+    def export_backtest_data_to_csv(self):
+        """匯出回測資料到CSV（類似TradingView的匯出功能）"""
+        if not self.backtest_results:
+            self.calculate_backtest_metrics()
+        
+        # 創建詳細的回測資料
+        backtest_data = []
+        cumulative_top10 = [self.backtest_results['initial_capital']] + self.backtest_results['cumulative_top10']
+        cumulative_top30 = [self.backtest_results['initial_capital']] + self.backtest_results['cumulative_top30']
+        
+        for i, year in enumerate(['初始'] + self.backtest_results['years']):
+            if i == 0:
+                backtest_data.append({
+                    '年份': year,
+                    '前10支股票_年度報酬率(%)': 0,
+                    '前10支股票_累積淨值': cumulative_top10[i],
+                    '前30支股票_年度報酬率(%)': 0,
+                    '前30支股票_累積淨值': cumulative_top30[i],
+                    '前10支股票_回撤(%)': 0,
+                    '前30支股票_回撤(%)': 0
+                })
+            else:
+                # 計算回撤
+                peak_top10 = max(cumulative_top10[:i+1])
+                peak_top30 = max(cumulative_top30[:i+1])
+                drawdown_top10 = (peak_top10 - cumulative_top10[i]) / peak_top10 * 100
+                drawdown_top30 = (peak_top30 - cumulative_top30[i]) / peak_top30 * 100
+                
+                backtest_data.append({
+                    '年份': year,
+                    '前10支股票_年度報酬率(%)': self.backtest_results['returns_top10'][i-1],
+                    '前10支股票_累積淨值': cumulative_top10[i],
+                    '前30支股票_年度報酬率(%)': self.backtest_results['returns_top30'][i-1],
+                    '前30支股票_累積淨值': cumulative_top30[i],
+                    '前10支股票_回撤(%)': drawdown_top10,
+                    '前30支股票_回撤(%)': drawdown_top30
+                })
+        
+        # 儲存回測資料
+        backtest_df = pd.DataFrame(backtest_data)
+        backtest_path = os.path.join(self.output_dir, 'tradingview_backtest_data.csv')
+        backtest_df.to_csv(backtest_path, index=False, encoding='utf-8-sig')
+        
+        # 儲存績效指標
+        metrics_data = []
+        metrics_top10 = self.backtest_results['metrics_top10']
+        metrics_top30 = self.backtest_results['metrics_top30']
+        
+        for key in metrics_top10.keys():
+            metrics_data.append({
+                '指標': key,
+                '前10支股票策略': metrics_top10[key],
+                '前30支股票策略': metrics_top30[key]
+            })
+        
+        metrics_df = pd.DataFrame(metrics_data)
+        metrics_path = os.path.join(self.output_dir, 'tradingview_backtest_metrics.csv')
+        metrics_df.to_csv(metrics_path, index=False, encoding='utf-8-sig')
+        
+        print(f"回測資料已匯出至:")
+        print(f"- {backtest_path}")
+        print(f"- {metrics_path}")
+
+    def print_backtest_summary(self):
+        """印出TradingView風格的回測摘要"""
+        if not self.backtest_results:
+            self.calculate_backtest_metrics()
+        
+        metrics_top10 = self.backtest_results['metrics_top10']
+        metrics_top30 = self.backtest_results['metrics_top30']
+        
+        print("\n" + "="*60)
+        print("TradingView風格回測結果摘要")
+        print("="*60)
+        print(f"回測期間: {self.backtest_results['years'][0]} - {self.backtest_results['years'][-1]}")
+        print(f"初始資金: {self.backtest_results['initial_capital']:,} 元")
+        print(f"總交易次數: {metrics_top10['total_trades']}")
+        
+        print(f"\n【前10支股票策略】")
+        print(f"  總報酬率: {metrics_top10['total_return']:.2f}%")
+        print(f"  年化報酬率: {metrics_top10['annual_return']:.2f}%")
+        print(f"  夏普比率: {metrics_top10['sharpe_ratio']:.3f}")
+        print(f"  最大回撤: {metrics_top10['max_drawdown']:.2f}%")
+        print(f"  勝率: {metrics_top10['win_rate']:.1f}%")
+        print(f"  盈利因子: {metrics_top10['profit_factor']:.2f}")
+        print(f"  期末淨值: {self.backtest_results['cumulative_top10'][-1]:,.0f} 元")
+        
+        print(f"\n【前30支股票策略】")
+        print(f"  總報酬率: {metrics_top30['total_return']:.2f}%")
+        print(f"  年化報酬率: {metrics_top30['annual_return']:.2f}%")
+        print(f"  夏普比率: {metrics_top30['sharpe_ratio']:.3f}")
+        print(f"  最大回撤: {metrics_top30['max_drawdown']:.2f}%")
+        print(f"  勝率: {metrics_top30['win_rate']:.1f}%")
+        print(f"  盈利因子: {metrics_top30['profit_factor']:.2f}")
+        print(f"  期末淨值: {self.backtest_results['cumulative_top30'][-1]:,.0f} 元")
+
     def save_results_to_csv(self):
         """儲存結果到CSV檔案"""
         if not self.results:
@@ -463,7 +828,7 @@ class Paper3StockSelector:
         print(f"- paper3_all_stock_predictions.csv (所有股票預測結果)")
         
         return results_df
-    
+
     def create_visualizations(self):
         """創建視覺化圖表"""
         if not self.results:
@@ -542,7 +907,7 @@ class Paper3StockSelector:
         chart_path = os.path.join(self.output_dir, 'paper3_ga_svr_analysis.png')
         plt.savefig(chart_path, dpi=300, bbox_inches='tight')
         plt.show()
-    
+
     def create_top10_individual_returns_chart(self):
         """創建前10支股票各自的年化報酬折線圖"""
         if not self.results:
@@ -620,280 +985,14 @@ class Paper3StockSelector:
         individual_chart_path = os.path.join(self.output_dir, 'paper3_top10_individual_returns.png')
         plt.savefig(individual_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
-    
-    def create_top10_analysis_chart(self):
-        """創建前10支股票專門分析圖表"""
-        if not self.results:
-            return
-        
-        setup_chinese_font()
-        
-        # 分析前10支股票的表現
-        years = [r['test_year'] for r in self.results]
-        returns_10 = [r['best_return'] for r in self.results]
-        
-        # 計算年度排名分布
-        yearly_rankings = {}
-        for result in self.results:
-            if result['selected_stocks_top10'] is not None:
-                year = result['test_year']
-                stocks = result['selected_stocks_top10']
-                yearly_rankings[year] = stocks['Return'].tolist()
-        
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('前10支股票詳細分析', fontsize=16, fontweight='bold')
-        
-        # 1. 前10支股票年度報酬率分布
-        colors = ['green' if r > 0 else 'red' for r in returns_10]
-        axes[0, 0].bar(years, returns_10, color=colors, alpha=0.7)
-        axes[0, 0].axhline(y=0, color='black', linestyle='-', alpha=0.3)
-        axes[0, 0].set_title('前10支股票年度平均報酬率')
-        axes[0, 0].set_xlabel('年份')
-        axes[0, 0].set_ylabel('平均報酬率 (%)')
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # 2. 前10支股票報酬率箱型圖
-        if yearly_rankings:
-            box_data = []
-            box_labels = []
-            for year in sorted(yearly_rankings.keys()):
-                box_data.append(yearly_rankings[year])
-                box_labels.append(str(year))
-            
-            axes[0, 1].boxplot(box_data, labels=box_labels)
-            axes[0, 1].set_title('前10支股票個別報酬率分布')
-            axes[0, 1].set_xlabel('年份')
-            axes[0, 1].set_ylabel('個別股票報酬率 (%)')
-            axes[0, 1].grid(True, alpha=0.3)
-            axes[0, 1].tick_params(axis='x', rotation=45)
-        
-        # 3. 勝率統計
-        positive_years = sum(1 for r in returns_10 if r > 0)
-        total_years = len(returns_10)
-        win_rate = positive_years / total_years * 100
-        
-        axes[1, 0].pie([positive_years, total_years - positive_years], 
-                      labels=[f'正報酬\n({positive_years}年)', f'負報酬\n({total_years - positive_years}年)'],
-                      colors=['green', 'red'], autopct='%1.1f%%', startangle=90)
-        axes[1, 0].set_title(f'前10支股票勝率統計\n總勝率: {win_rate:.1f}%')
-        
-        # 4. 累積報酬率與統計指標
-        cumulative_returns = np.cumsum(returns_10)
-        axes[1, 1].plot(years, cumulative_returns, marker='o', linewidth=2, markersize=6, color='blue')
-        axes[1, 1].fill_between(years, cumulative_returns, alpha=0.3, color='blue')
-        axes[1, 1].set_title('前10支股票累積報酬率')
-        axes[1, 1].set_xlabel('年份')
-        axes[1, 1].set_ylabel('累積報酬率 (%)')
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        # 添加統計信息
-        mean_return = np.mean(returns_10)
-        std_return = np.std(returns_10)
-        max_return = np.max(returns_10)
-        min_return = np.min(returns_10)
-        
-        stats_text = f'平均: {mean_return:.2f}%\n標準差: {std_return:.2f}%\n最高: {max_return:.2f}%\n最低: {min_return:.2f}%'
-        axes[1, 1].text(0.02, 0.98, stats_text, transform=axes[1, 1].transAxes, 
-                        verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
-        plt.tight_layout()
-        top10_chart_path = os.path.join(self.output_dir, 'paper3_top10_analysis.png')
-        plt.savefig(top10_chart_path, dpi=300, bbox_inches='tight')
-        plt.show()
-    
-    def create_parameter_analysis_chart(self):
-        """創建參數分析圖表"""
-        if not self.results:
-            return
-        
-        setup_chinese_font()
-        
-        c_params = [r['best_C'] for r in self.results]
-        gamma_params = [r['best_gamma'] for r in self.results]
-        epsilon_params = [r['best_epsilon'] for r in self.results]
-        returns = [r['best_return'] for r in self.results]
-        
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('GA-SVR參數分析', fontsize=16, fontweight='bold')
-        
-        # 1. C參數分布
-        axes[0, 0].hist(c_params, bins=10, alpha=0.7, color='blue', edgecolor='black')
-        axes[0, 0].set_title('C參數分布')
-        axes[0, 0].set_xlabel('C參數值')
-        axes[0, 0].set_ylabel('頻次')
-        axes[0, 0].set_xscale('log')
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # 2. gamma參數分布
-        axes[0, 1].hist(gamma_params, bins=10, alpha=0.7, color='red', edgecolor='black')
-        axes[0, 1].set_title('gamma參數分布')
-        axes[0, 1].set_xlabel('gamma參數值')
-        axes[0, 1].set_ylabel('頻次')
-        axes[0, 1].set_xscale('log')
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # 3. epsilon參數分布
-        axes[1, 0].hist(epsilon_params, bins=10, alpha=0.7, color='green', edgecolor='black')
-        axes[1, 0].set_title('epsilon參數分布')
-        axes[1, 0].set_xlabel('epsilon參數值')
-        axes[1, 0].set_ylabel('頻次')
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # 4. 參數相關性熱圖
-        param_data = pd.DataFrame({
-            'C': c_params,
-            'gamma': gamma_params,
-            'epsilon': epsilon_params,
-            'return': returns
-        })
-        correlation_matrix = param_data.corr()
-        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0, ax=axes[1, 1])
-        axes[1, 1].set_title('參數相關性分析')
-        
-        plt.tight_layout()
-        param_chart_path = os.path.join(self.output_dir, 'ga_svr_parameter_analysis.png')
-        plt.savefig(param_chart_path, dpi=300, bbox_inches='tight')
-        plt.show()
-    
-    def create_feature_importance_chart(self):
-        """創建特徵重要性圖表"""
-        setup_chinese_font()
-        
-        feature_counts = {}
-        for result in self.results:
-            for feature in result['best_features']:
-                feature_counts[feature] = feature_counts.get(feature, 0) + 1
-        
-        if not feature_counts:
-            return
-        
-        sorted_features = sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)
-        features, counts = zip(*sorted_features)
-        
-        plt.figure(figsize=(14, 8))
-        bars = plt.barh(range(len(features)), counts, alpha=0.7, color='lightblue')
-        plt.yticks(range(len(features)), features)
-        plt.xlabel('被選中次數')
-        plt.title('GA-SVR特徵重要性分析（被選為最佳特徵的次數）')
-        plt.grid(True, alpha=0.3)
-        
-        for i, bar in enumerate(bars):
-            width = bar.get_width()
-            plt.text(width + 0.1, bar.get_y() + bar.get_height()/2, 
-                    str(counts[i]), ha='left', va='center')
-        
-        plt.tight_layout()
-        feature_chart_path = os.path.join(self.output_dir, 'ga_svr_feature_importance.png')
-        plt.savefig(feature_chart_path, dpi=300, bbox_inches='tight')
-        plt.show()
-    
-    def save_analysis_report(self):
-        """儲存分析報告"""
-        if not self.results:
-            return
-        
-        returns_10 = [r['best_return'] for r in self.results]
-        returns_30 = [r['best_return_30'] for r in self.results]
-        c_params = [r['best_C'] for r in self.results]
-        gamma_params = [r['best_gamma'] for r in self.results]
-        epsilon_params = [r['best_epsilon'] for r in self.results]
-        
-        report = f"""
-Paper 3 GA-SVR股票選股模型分析報告
-{'='*50}
 
-分析概況:
-- 分析期間: {self.results[0]['train_year']}-{self.results[-1]['test_year']}
-- 總測試年數: {len(self.results)}
-- 使用演算法: 遺傳演算法優化的支持向量回歸 (GA-SVR)
-- 族群大小: {self.population_size}
-- 演化世代: {self.generations}
-
-前10支股票績效統計:
-- 平均年報酬率: {np.mean(returns_10):.4f}%
-- 報酬率標準差: {np.std(returns_10):.4f}%
-- 最高年報酬率: {np.max(returns_10):.4f}%
-- 最低年報酬率: {np.min(returns_10):.4f}%
-- 正報酬年數: {sum(1 for r in returns_10 if r > 0)}/{len(returns_10)}
-- 勝率: {sum(1 for r in returns_10 if r > 0)/len(returns_10)*100:.2f}%
-
-前30支股票績效統計:
-- 平均年報酬率: {np.mean(returns_30):.4f}%
-- 報酬率標準差: {np.std(returns_30):.4f}%
-- 最高年報酬率: {np.max(returns_30):.4f}%
-- 最低年報酬率: {np.min(returns_30):.4f}%
-- 正報酬年數: {sum(1 for r in returns_30 if r > 0)}/{len(returns_30)}
-- 勝率: {sum(1 for r in returns_30 if r > 0)/len(returns_30)*100:.2f}%
-
-SVR參數統計:
-- C參數平均值: {np.mean(c_params):.4f}
-- C參數標準差: {np.std(c_params):.4f}
-- gamma參數平均值: {np.mean(gamma_params):.4f}
-- gamma參數標準差: {np.std(gamma_params):.4f}
-- epsilon參數平均值: {np.mean(epsilon_params):.4f}
-- epsilon參數標準差: {np.std(epsilon_params):.4f}
-
-年度詳細結果:
-"""
-        
-        for result in self.results:
-            report += f"""
-{result['test_year']}年:
-  - 前10支股票報酬率: {result['best_return']:.4f}%
-  - 前30支股票報酬率: {result['best_return_30']:.4f}%
-  - 最佳C: {result['best_C']:.4f}
-  - 最佳gamma: {result['best_gamma']:.4f}
-  - 最佳epsilon: {result['best_epsilon']:.4f}
-  - 特徵數量: {result['num_features']}
-  - GA適應度: {result['fitness']:.4f}
-  - 主要特徵: {', '.join(result['best_features'][:5])}{'...' if len(result['best_features']) > 5 else ''}
-"""
-        
-        best_year_idx_10 = np.argmax(returns_10)
-        best_result = self.results[best_year_idx_10]
-        
-        report += f"""
-
-最佳表現年份（前10支股票）: {best_result['test_year']}
-  - 報酬率: {best_result['best_return']:.4f}%
-  - 使用C: {best_result['best_C']:.4f}
-  - 使用gamma: {best_result['best_gamma']:.4f}
-  - 使用epsilon: {best_result['best_epsilon']:.4f}
-  - 特徵數量: {best_result['num_features']}
-
-風險指標:
-- 前10支股票夏普比率: {np.mean(returns_10)/np.std(returns_10):.4f} (假設無風險利率為0)
-- 前30支股票夏普比率: {np.mean(returns_30)/np.std(returns_30):.4f} (假設無風險利率為0)
-- 前10支股票最大回撤: {self.calculate_max_drawdown(returns_10):.4f}%
-- 前30支股票最大回撤: {self.calculate_max_drawdown(returns_30):.4f}%
-
-GA-SVR方法優勢:
-- 同時優化特徵選擇和SVR參數，避免局部最優解
-- 使用遺傳演算法的全域搜索能力
-- SVR的非線性建模能力適合複雜的股票市場
-- 自動化參數調整，減少人為偏差
-- 強健的回歸預測能力
-- 能夠選出每年表現最佳的前10支股票
-
-Paper 3 核心貢獻:
-- 結合GA和SVR的混合方法，提供了有效的股票選擇策略
-- 透過14個財務比率的綜合分析，捕捉股票的多維特徵
-- 基於預測報酬率的排序選擇，提供了量化的投資決策依據
-"""
-        
-        report_path = os.path.join(self.output_dir, 'paper3_ga_svr_report.txt')
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(report)
-        
-        print(f"分析報告已儲存至: {report_path}")
-    
     def calculate_max_drawdown(self, returns):
         """計算最大回撤"""
         cumulative = np.cumsum(returns)
         running_max = np.maximum.accumulate(cumulative)
         drawdown = cumulative - running_max
         return np.min(drawdown)
-    
+
     def print_summary(self):
         """印出分析摘要"""
         if not self.results:
@@ -922,17 +1021,6 @@ Paper 3 核心貢獻:
         print(f"  最高年報酬率: {np.max(returns_30):.4f}%")
         print(f"  最低年報酬率: {np.min(returns_30):.4f}%")
         print(f"  正報酬年數: {sum(1 for r in returns_30 if r > 0)}/{len(returns_30)}")
-        
-        best_year_idx = np.argmax(returns_10)
-        best_result = self.results[best_year_idx]
-        
-        print(f"\n最佳表現年份: {best_result['test_year']}")
-        print(f"  前10支股票報酬率: {best_result['best_return']:.4f}%")
-        print(f"  前30支股票報酬率: {best_result['best_return_30']:.4f}%")
-        print(f"  使用C: {best_result['best_C']:.4f}")
-        print(f"  使用gamma: {best_result['best_gamma']:.4f}")
-        print(f"  使用epsilon: {best_result['best_epsilon']:.4f}")
-        print(f"  特徵數量: {best_result['num_features']}")
 
 def main():
     selector = Paper3StockSelector('top200.xlsx', output_dir='Q4output')
@@ -942,12 +1030,14 @@ def main():
     
     selector.save_results_to_csv()
     selector.create_visualizations()
-    selector.create_top10_individual_returns_chart()  # 新增：前10支股票各自的年化報酬折線圖
-    selector.create_top10_analysis_chart()
-    selector.create_parameter_analysis_chart()
-    selector.create_feature_importance_chart()
-    selector.save_analysis_report()
-    selector.print_summary()
+    selector.create_top10_individual_returns_chart()
+    
+    # 新增：TradingView風格回測（獨立圖表）
+    print("\n開始TradingView風格回測分析...")
+    selector.calculate_backtest_metrics()
+    selector.create_tradingview_style_backtest_chart()
+    selector.export_backtest_data_to_csv()
+    selector.print_backtest_summary()
     
     print(f"\n所有結果已儲存至 Q4output 資料夾")
     

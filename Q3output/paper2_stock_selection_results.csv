@@ -1,12 +1,12 @@
 ﻿訓練年份,測試年份,前10支股票平均報酬率(%),所有選中股票平均報酬率(%),最佳模型,特徵選擇方法,模型準確率,特徵數量,選中股票數量,最佳參數
 1997,1998,20.64035,14.73982743362832,RandomForest,f_classif,1.0,20,113,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 50}"
-1998,1999,-31.70686999999999,-30.093799999999998,LogisticRegression,mutual_info,0.9698477310417609,20,8,"{'C': 0.1, 'penalty': 'l1', 'solver': 'liblinear'}"
-1999,2000,57.56779999999999,28.075911340206186,RandomForest,mutual_info,0.990049751243781,20,194,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 50}"
-2000,2001,-16.126530000000002,-12.931217065868264,NaiveBayes,mutual_info,0.5211065882707674,20,167,{'var_smoothing': 1e-09}
-2001,2002,35.383889999999994,29.367293983146062,RandomForest,f_classif,0.9601990049751244,20,178,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 50}"
+1998,1999,-25.481559999999998,-32.46961111111111,RandomForest,mutual_info,0.9950248756218905,20,9,"{'max_depth': 10, 'min_samples_leaf': 1, 'min_samples_split': 5, 'n_estimators': 50}"
+1999,2000,48.56966,28.075911340206186,GradientBoosting,f_classif,0.9950248756218905,20,194,"{'learning_rate': 0.01, 'max_depth': 3, 'n_estimators': 50, 'subsample': 0.8}"
+2000,2001,-12.935390000000002,-11.327803038674034,NaiveBayes,mutual_info,0.45062565958088346,20,181,{'var_smoothing': 1e-08}
+2001,2002,47.72815,29.367293983146062,RandomForest,mutual_info,0.9701492537313433,20,178,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 100}"
 2002,2003,27.52051,7.7338525,RandomForest,f_classif,0.969998492386552,20,40,"{'max_depth': 5, 'min_samples_leaf': 2, 'min_samples_split': 5, 'n_estimators': 50}"
 2003,2004,45.69046999999999,13.765737884615383,GradientBoosting,random_forest,0.9899743705713856,20,104,"{'learning_rate': 0.01, 'max_depth': 3, 'n_estimators': 50, 'subsample': 0.8}"
-2004,2005,36.336059999999996,25.848030356756755,NaiveBayes,mutual_info,0.5310568370269863,20,185,{'var_smoothing': 1e-09}
-2005,2006,27.00233,9.090359615384616,NaiveBayes,mutual_info,0.5891753354439921,20,130,{'var_smoothing': 1e-08}
+2004,2005,35.91361,27.82370011111111,NaiveBayes,mutual_info,0.5710839740690486,20,144,{'var_smoothing': 1e-09}
+2005,2006,17.84689,5.977523684210526,RandomForest,random_forest,0.990049751243781,20,57,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 50}"
 2006,2007,-45.81410999999999,-58.475649999999995,GradientBoosting,mutual_info,0.9949494949494949,20,4,"{'learning_rate': 0.01, 'max_depth': 3, 'n_estimators': 50, 'subsample': 0.8}"
 2007,2008,146.06978999999998,103.74272099999999,RandomForest,f_classif,0.990049751243781,20,200,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 50}"
