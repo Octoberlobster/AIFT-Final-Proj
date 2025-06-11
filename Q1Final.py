@@ -2,24 +2,34 @@ import pandas as pd
 import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 from itertools import combinations
 import warnings
 import os
+import platform
+
 warnings.filterwarnings('ignore')
 
-# 設定中文字體
-plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'Arial Unicode MS', 'SimHei']
-plt.rcParams['axes.unicode_minus'] = False
+# --------- 中文字體設定 ---------
+def setup_chinese_font():
+    system = platform.system()
+    if system == 'Windows':
+        plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial Unicode MS']
+    elif system == 'Darwin':  # macOS
+        plt.rcParams['font.sans-serif'] = ['Heiti TC', 'PingFang TC', 'Arial Unicode MS']
+    else:  # Linux
+        plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'Noto Sans CJK TC', 'AR PL UMing CN']
+    plt.rcParams['axes.unicode_minus'] = False
+
+setup_chinese_font()
+sns.set_style("darkgrid", {"font.sans-serif": plt.rcParams['font.sans-serif']})
 
 class StockKNNSelector:
     def __init__(self, data_path, output_dir='Q1output'):
-        """初始化股票選股模型"""
         self.output_dir = output_dir
-        self.create_output_directory()
-        
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
         self.data = self.load_and_preprocess_data(data_path)
         self.feature_columns = [
             '市值(百萬元)', '收盤價(元)_年', '股價淨值比', '股價營收比',
@@ -28,103 +38,59 @@ class StockKNNSelector:
             'M應收帳款週轉次', 'M營業利益成長率', 'M稅後淨利成長率'
         ]
         self.results = []
-        
-    def create_output_directory(self):
-        """創建輸出資料夾"""
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-            print(f"已創建輸出資料夾: {self.output_dir}")
-        else:
-            print(f"輸出資料夾已存在: {self.output_dir}")
-        
+
     def load_and_preprocess_data(self, data_path):
-        """載入並預處理資料"""
-        # 讀取Excel檔案
         data = pd.read_excel(data_path, sheet_name='Sheet1')
-        
-        # 提取年份
         data['年份'] = data['年月'].astype(str).str[:4].astype(int)
-        
-        # 移除2009年12月的資料
         data = data[data['年月'] != 200912]
-        
-        # 處理缺失值
         numeric_columns = data.select_dtypes(include=[np.number]).columns
         data[numeric_columns] = data[numeric_columns].fillna(data[numeric_columns].median())
-        
         return data
-    
+
     def get_feature_combinations(self, max_features=8):
-        """生成特徵組合"""
         feature_combinations = []
-        
-        # 單一特徵
         for feature in self.feature_columns:
             feature_combinations.append([feature])
-        
-        # 2-5個特徵的組合（限制數量避免過多組合）
         for r in range(2, min(6, max_features + 1)):
-            # 只選擇部分重要組合
             if r <= 3:
                 for combo in combinations(self.feature_columns[:10], r):
                     feature_combinations.append(list(combo))
             else:
-                # 對於較大的組合，只選擇包含重要特徵的組合
-                important_features = ['市值(百萬元)', '股價淨值比', '資產報酬率ROA', 
+                important_features = ['市值(百萬元)', '股價淨值比', '資產報酬率ROA',
                                     '營業利益率OPM', 'M淨值報酬率─稅後']
                 for combo in combinations(important_features, r):
                     feature_combinations.append(list(combo))
-        
-        return feature_combinations[:50]  # 限制組合數量
-    
+        return feature_combinations[:50]
+
     def train_and_evaluate(self, train_year, test_year, k_values, feature_combinations):
-        """訓練並評估模型"""
-        # 準備訓練和測試資料
         train_data = self.data[self.data['年份'] == train_year].copy()
         test_data = self.data[self.data['年份'] == test_year].copy()
-        
         if len(train_data) == 0 or len(test_data) == 0:
             return None
-        
         best_return = -np.inf
         best_params = {}
         best_selected_stocks = None
-        
         for features in feature_combinations:
-            # 檢查特徵是否存在
             available_features = [f for f in features if f in train_data.columns]
             if len(available_features) == 0:
                 continue
-                
             try:
-                # 準備特徵資料
                 X_train = train_data[available_features].values
                 y_train = train_data['ReturnMean_year_Label'].values
                 X_test = test_data[available_features].values
-                
-                # 標準化
                 scaler = StandardScaler()
                 X_train_scaled = scaler.fit_transform(X_train)
                 X_test_scaled = scaler.transform(X_test)
-                
                 for k in k_values:
                     if k >= len(train_data):
                         continue
-                        
-                    # 訓練KNN模型
                     knn = KNeighborsClassifier(n_neighbors=k)
                     knn.fit(X_train_scaled, y_train)
-                    
-                    # 預測測試集
                     y_pred = knn.predict(X_test_scaled)
-                    
-                    # 選擇預測為1（高於平均）的股票
                     selected_indices = np.where(y_pred == 1)[0]
-                    
                     if len(selected_indices) > 0:
                         selected_stocks = test_data.iloc[selected_indices]
                         avg_return = selected_stocks['Return'].mean()
-                        
                         if avg_return > best_return:
                             best_return = avg_return
                             best_params = {
@@ -133,10 +99,8 @@ class StockKNNSelector:
                                 'num_features': len(available_features)
                             }
                             best_selected_stocks = selected_stocks
-                            
-            except Exception as e:
+            except Exception:
                 continue
-        
         return {
             'train_year': train_year,
             'test_year': test_year,
@@ -147,25 +111,19 @@ class StockKNNSelector:
             'num_selected_stocks': len(best_selected_stocks) if best_selected_stocks is not None else 0,
             'selected_stocks': best_selected_stocks
         }
-    
+
     def run_rolling_window_analysis(self):
-        """執行滾動視窗分析"""
         years = sorted(self.data['年份'].unique())
         k_values = [1, 3, 5, 7, 9, 11, 15, 21]
         feature_combinations = self.get_feature_combinations()
-        
         print(f"開始分析，共有 {len(feature_combinations)} 種特徵組合")
         print(f"K值範圍: {k_values}")
         print(f"年份範圍: {years}")
-        
         for i in range(len(years) - 1):
             train_year = years[i]
             test_year = years[i + 1]
-            
             print(f"\n分析 {train_year} -> {test_year}")
-            
             result = self.train_and_evaluate(train_year, test_year, k_values, feature_combinations)
-            
             if result and result['best_return'] != -np.inf:
                 self.results.append(result)
                 print(f"最佳平均報酬率: {result['best_return']:.4f}%")
@@ -174,17 +132,13 @@ class StockKNNSelector:
                 print(f"選中股票數量: {result['num_selected_stocks']}")
             else:
                 print("未找到有效結果")
-    
+
     def save_results_to_csv(self):
-        """儲存結果到CSV檔案"""
         if not self.results:
             print("沒有結果可儲存")
             return
-        
-        # 準備結果資料
         results_data = []
         selected_stocks_data = []
-        
         for result in self.results:
             results_data.append({
                 '訓練年份': result['train_year'],
@@ -195,140 +149,97 @@ class StockKNNSelector:
                 '選中股票數量': result['num_selected_stocks'],
                 '最佳特徵組合': ', '.join(result['best_features'])
             })
-            
-            # 儲存選中的股票詳細資訊
             if result['selected_stocks'] is not None:
                 stocks = result['selected_stocks'].copy()
                 stocks['訓練年份'] = result['train_year']
                 stocks['測試年份'] = result['test_year']
                 stocks['使用K值'] = result['best_k']
                 selected_stocks_data.append(stocks)
-        
-        # 儲存主要結果
         results_df = pd.DataFrame(results_data)
         results_path = os.path.join(self.output_dir, 'knn_stock_selection_results.csv')
         results_df.to_csv(results_path, index=False, encoding='utf-8-sig')
-        
-        # 儲存選中股票詳細資訊
         if selected_stocks_data:
             all_selected_stocks = pd.concat(selected_stocks_data, ignore_index=True)
             stocks_path = os.path.join(self.output_dir, 'selected_stocks_details.csv')
             all_selected_stocks.to_csv(stocks_path, index=False, encoding='utf-8-sig')
-        
         print(f"結果已儲存到 {self.output_dir} 資料夾:")
         print(f"- knn_stock_selection_results.csv (主要結果)")
         print(f"- selected_stocks_details.csv (選中股票詳細資訊)")
-        
         return results_df
-    
+
     def create_visualizations(self):
-        """創建視覺化圖表"""
         if not self.results:
             print("沒有結果可視覺化")
             return
-        
-        # 準備資料
+        setup_chinese_font()
         years = [r['test_year'] for r in self.results]
         returns = [r['best_return'] for r in self.results]
         k_values = [r['best_k'] for r in self.results]
         num_features = [r['num_features'] for r in self.results]
         num_stocks = [r['num_selected_stocks'] for r in self.results]
-        
-        # 創建圖表
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         fig.suptitle('KNN股票選股模型分析結果', fontsize=16, fontweight='bold')
-        
-        # 1. 年度平均報酬率趨勢
         axes[0, 0].plot(years, returns, marker='o', linewidth=2, markersize=8)
         axes[0, 0].set_title('年度最佳平均報酬率趨勢')
         axes[0, 0].set_xlabel('年份')
         axes[0, 0].set_ylabel('平均報酬率 (%)')
         axes[0, 0].grid(True, alpha=0.3)
         axes[0, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
-        
-        # 2. 最佳K值分布
         k_counts = pd.Series(k_values).value_counts().sort_index()
         axes[0, 1].bar(k_counts.index, k_counts.values, alpha=0.7)
         axes[0, 1].set_title('最佳K值分布')
         axes[0, 1].set_xlabel('K值')
         axes[0, 1].set_ylabel('次數')
         axes[0, 1].grid(True, alpha=0.3)
-        
-        # 3. 特徵數量 vs 報酬率
-        scatter = axes[1, 0].scatter(num_features, returns, c=years, cmap='viridis', 
-                                   s=100, alpha=0.7)
+        scatter = axes[1, 0].scatter(num_features, returns, c=years, cmap='viridis', s=100, alpha=0.7)
         axes[1, 0].set_title('特徵數量 vs 平均報酬率')
         axes[1, 0].set_xlabel('特徵數量')
         axes[1, 0].set_ylabel('平均報酬率 (%)')
         axes[1, 0].grid(True, alpha=0.3)
         plt.colorbar(scatter, ax=axes[1, 0], label='年份')
-        
-        # 4. 選中股票數量趨勢
         axes[1, 1].plot(years, num_stocks, marker='s', linewidth=2, markersize=8, color='orange')
         axes[1, 1].set_title('選中股票數量趨勢')
         axes[1, 1].set_xlabel('年份')
         axes[1, 1].set_ylabel('股票數量')
         axes[1, 1].grid(True, alpha=0.3)
-        
         plt.tight_layout()
-        
-        # 儲存圖表
         chart_path = os.path.join(self.output_dir, 'knn_stock_analysis_results.png')
         plt.savefig(chart_path, dpi=300, bbox_inches='tight')
         plt.show()
-        
-        # 創建特徵重要性分析
         self.create_feature_importance_chart()
-    
+
     def create_feature_importance_chart(self):
-        """創建特徵重要性圖表"""
-        # 統計每個特徵被選中的次數
+        setup_chinese_font()
         feature_counts = {}
         for result in self.results:
             for feature in result['best_features']:
                 feature_counts[feature] = feature_counts.get(feature, 0) + 1
-        
         if not feature_counts:
             return
-        
-        # 排序並繪製
         sorted_features = sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)
         features, counts = zip(*sorted_features)
-        
         plt.figure(figsize=(12, 8))
         bars = plt.barh(range(len(features)), counts, alpha=0.7)
         plt.yticks(range(len(features)), features)
         plt.xlabel('被選中次數')
         plt.title('特徵重要性分析（被選為最佳特徵的次數）')
         plt.grid(True, alpha=0.3)
-        
-        # 添加數值標籤
         for i, bar in enumerate(bars):
             width = bar.get_width()
-            plt.text(width + 0.1, bar.get_y() + bar.get_height()/2, 
-                    str(counts[i]), ha='left', va='center')
-        
+            plt.text(width + 0.1, bar.get_y() + bar.get_height()/2, str(counts[i]), ha='left', va='center')
         plt.tight_layout()
-        
-        # 儲存圖表
         feature_chart_path = os.path.join(self.output_dir, 'feature_importance_analysis.png')
         plt.savefig(feature_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
-    
+
     def create_performance_summary_chart(self):
-        """創建績效摘要圖表"""
+        setup_chinese_font()
         if not self.results:
             return
-        
         returns = [r['best_return'] for r in self.results]
         years = [r['test_year'] for r in self.results]
-        
-        # 計算累積報酬率
         cumulative_returns = np.cumsum(returns)
-        
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        
-        # 年度報酬率
         colors = ['green' if r > 0 else 'red' for r in returns]
         ax1.bar(years, returns, color=colors, alpha=0.7)
         ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
@@ -336,29 +247,21 @@ class StockKNNSelector:
         ax1.set_xlabel('年份')
         ax1.set_ylabel('報酬率 (%)')
         ax1.grid(True, alpha=0.3)
-        
-        # 累積報酬率
         ax2.plot(years, cumulative_returns, marker='o', linewidth=2, markersize=6, color='blue')
         ax2.fill_between(years, cumulative_returns, alpha=0.3, color='blue')
         ax2.set_title('累積報酬率趨勢')
         ax2.set_xlabel('年份')
         ax2.set_ylabel('累積報酬率 (%)')
         ax2.grid(True, alpha=0.3)
-        
         plt.tight_layout()
-        
-        # 儲存圖表
         performance_chart_path = os.path.join(self.output_dir, 'performance_summary.png')
         plt.savefig(performance_chart_path, dpi=300, bbox_inches='tight')
         plt.show()
-    
+
     def save_analysis_report(self):
-        """儲存分析報告"""
         if not self.results:
             return
-        
         returns = [r['best_return'] for r in self.results]
-        
         report = f"""
 KNN股票選股模型分析報告
 {'='*50}
@@ -378,7 +281,6 @@ KNN股票選股模型分析報告
 
 年度詳細結果:
 """
-        
         for result in self.results:
             report += f"""
 {result['test_year']}年:
@@ -388,8 +290,6 @@ KNN股票選股模型分析報告
   - 選中股票數: {result['num_selected_stocks']}
   - 主要特徵: {', '.join(result['best_features'][:3])}{'...' if len(result['best_features']) > 3 else ''}
 """
-        
-        # 最佳表現年份
         best_year_idx = np.argmax(returns)
         best_result = self.results[best_year_idx]
         report += f"""
@@ -409,29 +309,22 @@ KNN股票選股模型分析報告
 - 平均特徵數量: {np.mean([r['num_features'] for r in self.results]):.2f}
 - 平均選股數量: {np.mean([r['num_selected_stocks'] for r in self.results]):.2f}
 """
-        
-        # 儲存報告
         report_path = os.path.join(self.output_dir, 'analysis_report.txt')
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
-        
         print(f"分析報告已儲存至: {report_path}")
-    
+
     def calculate_max_drawdown(self, returns):
-        """計算最大回撤"""
         cumulative = np.cumsum(returns)
         running_max = np.maximum.accumulate(cumulative)
         drawdown = cumulative - running_max
         return np.min(drawdown)
-    
+
     def print_summary(self):
-        """印出分析摘要"""
         if not self.results:
             print("沒有結果可顯示")
             return
-        
         returns = [r['best_return'] for r in self.results]
-        
         print("\n" + "="*50)
         print("KNN股票選股模型分析摘要")
         print("="*50)
@@ -442,8 +335,6 @@ KNN股票選股模型分析報告
         print(f"最高年報酬率: {np.max(returns):.4f}%")
         print(f"最低年報酬率: {np.min(returns):.4f}%")
         print(f"正報酬年數: {sum(1 for r in returns if r > 0)}/{len(returns)}")
-        
-        # 最佳表現年份
         best_year_idx = np.argmax(returns)
         best_result = self.results[best_year_idx]
         print(f"\n最佳表現年份: {best_result['test_year']}")
@@ -452,33 +343,17 @@ KNN股票選股模型分析報告
         print(f"  特徵數量: {best_result['num_features']}")
         print(f"  選中股票數: {best_result['num_selected_stocks']}")
 
-# 主程式執行
 def main():
-    # 初始化模型（指定輸出資料夾為Q1output）
     selector = StockKNNSelector('top200.xlsx', output_dir='Q1output')
-    
-    # 執行分析
     print("開始執行KNN股票選股分析...")
     selector.run_rolling_window_analysis()
-    
-    # 儲存結果
-    results_df = selector.save_results_to_csv()
-    
-    # 創建視覺化
+    selector.save_results_to_csv()
     selector.create_visualizations()
-    
-    # 創建績效摘要圖表
     selector.create_performance_summary_chart()
-    
-    # 儲存分析報告
     selector.save_analysis_report()
-    
-    # 印出摘要
     selector.print_summary()
-    
     print(f"\n所有結果已儲存至 Q1output 資料夾")
-    
-    return selector, results_df
+    return selector
 
 if __name__ == "__main__":
-    selector, results_df = main()
+    selector = main()
