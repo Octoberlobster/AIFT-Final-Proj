@@ -1,0 +1,12 @@
+﻿訓練年份,測試年份,最佳平均報酬率(%),最佳模型,特徵選擇方法,模型準確率,特徵數量,選中股票數量,最佳參數
+1997,1998,15.925897413793106,LogisticRegression,f_classif,0.9750489974370571,20,116,"{'C': 1.0, 'penalty': 'l1', 'solver': 'liblinear'}"
+1998,1999,-30.093799999999998,LogisticRegression,mutual_info,0.9698477310417609,20,8,"{'C': 0.1, 'penalty': 'l1', 'solver': 'liblinear'}"
+1999,2000,29.450219444444443,NaiveBayes,random_forest,0.6598824061510628,20,180,{'var_smoothing': 1e-09}
+2000,2001,-8.384477409638555,NaiveBayes,mutual_info,0.5410070857832051,20,166,{'var_smoothing': 1e-09}
+2001,2002,32.99645349693252,NaiveBayes,random_forest,0.6603346901854364,20,163,{'var_smoothing': 1e-09}
+2002,2003,9.50533888888889,SVM,random_forest,0.9200211065882709,20,36,"{'C': 1.0, 'gamma': 'scale', 'kernel': 'linear'}"
+2003,2004,14.79340796511628,NaiveBayes,f_classif,0.6197045077642093,20,172,{'var_smoothing': 1e-08}
+2004,2005,29.635197999999995,NaiveBayes,mutual_info,0.5609829639680386,20,142,{'var_smoothing': 1e-08}
+2005,2006,10.25113804347826,NaiveBayes,mutual_info,0.7397859188903965,20,92,{'var_smoothing': 1e-09}
+2006,2007,-43.810500000000005,LogisticRegression,f_classif,0.9750489974370572,20,2,"{'C': 1.0, 'penalty': 'l1', 'solver': 'liblinear'}"
+2007,2008,104.23163743589744,NaiveBayes,random_forest,0.7348107945122871,20,195,{'var_smoothing': 1e-09}
